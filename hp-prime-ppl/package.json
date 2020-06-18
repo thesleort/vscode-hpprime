@@ -1,0 +1,25 @@
+{
+    "name": "hp-prime-ppl",
+    "displayName": "HP Prime PPL",
+    "description": "Language support for HP Prime PPL",
+    "version": "0.0.1",
+    "engines": {
+        "vscode": "^1.46.0"
+    },
+    "categories": [
+        "Programming Languages"
+    ],
+    "contributes": {
+        "languages": [{
+            "id": "hpppl",
+            "aliases": ["hp-ppl", "hpppl"],
+            "extensions": [".hptxt"],
+            "configuration": "./language-configuration.json"
+        }],
+        "grammars": [{
+            "language": "hpppl",
+            "scopeName": "source.hpppl",
+            "path": "./syntaxes/hpppl.tmLanguage.json"
+        }]
+    }
+}

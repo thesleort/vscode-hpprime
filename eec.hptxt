@@ -1,0 +1,5206 @@
+#pragma mode( separator(.,;) integer(h32) )
+
+LOCAL My_PRINT(str, show);
+LOCAL My_Term();
+LOCAL Clear_Term();
+LOCAL Vern:="0.80";
+
+// The following copyright message must not be removed under any circunstance
+// from the top of the source code (within the first 40 lines or so).  Also the
+// funcionality to display this message when the program is running must be
+// present from any derived work.
+LOCAL About()
+BEGIN
+   Clear_Term(); 
+   My_PRINT("Electric & Electronic Circuit Solver Version " + Vern, 0);
+   My_PRINT("Copyright (C) 2017-2018 Jesus Calvino-Fraga", 0);
+   My_PRINT("EECSolver@gmail.com", 0);
+   My_PRINT("", 0);
+   My_PRINT("This program is free software: you can redistribute it and/or modify", 0);
+   My_PRINT("it under the terms of the GNU General Public License as published by", 0);
+   My_PRINT("the Free Software Foundation, either version 3 of the License, or", 0);
+   My_PRINT("(at your option) any later version.", 0);
+   My_PRINT("", 0);
+   My_PRINT("This program is distributed in the hope that it will be useful,", 0);
+   My_PRINT("but WITHOUT ANY WARRANTY; without even the implied warranty of", 0);
+   My_PRINT("MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the", 0);
+   My_PRINT("GNU General Public License for more details.", 0);
+   My_PRINT("", 0);
+   My_PRINT("A copy of the GNU General Public License is too big to distribute", 0);
+   My_PRINT("along with this program.  Please visit <https://www.gnu.org/licenses/>", 0);
+   My_PRINT("to obtain a copy of the license.", 0);
+   My_Term();  
+END;
+
+LOCAL R2I (num);
+LOCAL S2R (str);
+LOCAL My_MSGBOX(str);
+
+LOCAL Items, Default_Items:={{"CSF",0,1,1,1,1}}, menu, submenu;
+LOCAL x, y, lx:=0, ly:=0;
+LOCAL CircuitName:="";
+LOCAL Copied:={}, CopiedX, CopiedY;
+LOCAL refx, refy; // Used when moving Items
+LOCAL newwire:=0, wsx, wsy, wex, wey; // Since drawing a wire is a two step process
+LOCAL newsel:=0, ssx, ssy, sex, sey;  // Since creating a selection box is a two step process
+// Colors used in the program.
+LOCAL blue:= RGB(0,0,255), green:= RGB(0,255,0), violet:= RGB(143,255,0), dark_green:= RGB(0,128,0);
+LOCAL orange:= RGB(255,127,0), yellow:= RGB(0,255,255), red:= RGB(255,0,0), white:= RGB(255,255,255);
+LOCAL black:= RGB(0,0,0), gray:= RGB(129,128,128), brown:= RGB(150,75,0), light_blue:= RGB(173,216,230);
+//
+LOCAL undolst:={}, undo_cur:=0, undo_min:=0, last_undo:=0, num_undo:=0, size_undo:=8; // For undo, redo, etc.
+LOCAL nmoves:=0; // Number of times a selection has been moved.  Needed to prevent unnecessary undo saves.
+LOCAL ShiftON:=0;
+//
+LOCAL RGBpart, RGBwire, RGBjunc, RGBpin, RGBback;
+LOCAL RGBgrid, RGBtext, RGBsel,  RGBcur, RGBbub;
+//
+LOCAL WireLst:={}, unlink_wires; // Used to create net lists
+
+LOCAL Save_Pos()
+BEGIN
+   Items(1,3):=x;
+   Items(1,4):=y;
+   Items(1,5):=lx;
+   Items(1,6):=ly;
+END;
+
+LOCAL Rest_Pos()
+BEGIN
+   x:=Items(1,3);
+   y:=Items(1,4);
+   lx:=Items(1,5);
+   ly:=Items(1,6);
+END;
+
+LOCAL Restart_undo()
+BEGIN
+   undolst:={};
+   undo_cur:=0;
+   undo_min:=0;
+   num_undo:=0;
+   last_undo:=0;
+END;
+
+LOCAL Add_undo ()
+BEGIN
+   // An infinite undo list may take too much memory: I had an "Insuficient memory" error once, which
+   // erased all saved circuits and the app itself.  Therefore, cap the list to a few undos and use
+   // a circular list.  For the circular list use modular arithmetic.
+   undolst[(undo_cur MOD size_undo)+1]:=Items;
+   undo_cur:=undo_cur+1;
+   IF (num_undo==size_undo) THEN undo_min:=undo_min+1; END;
+   last_undo:=1;
+   num_undo:=undo_cur-undo_min;
+END;
+
+LOCAL undo()
+BEGIN
+   IF last_undo == 1 THEN
+      last_undo:=0;
+      
+      undolst[(undo_cur MOD size_undo)+1]:=Items;
+      undo_cur:=undo_cur+1;
+      num_undo:=undo_cur-undo_min;
+      IF (num_undo==size_undo) THEN undo_min:=undo_min+1; END;
+      undo_cur:=undo_cur-1;
+   END;
+   IF undo_cur>(undo_min+1) THEN
+      undo_cur:=undo_cur-1;
+      Items:=undolst[(undo_cur MOD size_undo)+1];
+      Rest_Pos();
+   END;
+END;
+
+LOCAL redo()
+BEGIN
+   IF (undo_cur-undo_min) < (num_undo-1) THEN
+      undo_cur:=undo_cur+1;
+      Items:=undolst[(undo_cur MOD size_undo)+1];
+      Rest_Pos();
+   END;
+END;
+
+LOCAL DRAW_LINE(X0, Y0, X1, Y1, Angle, Mirror, PivotX, PivotY, lcolor, name)
+BEGIN
+   LOCAL cs, cc; // Calculated sine and cosine
+   LOCAL wx0, wy0, wx1, wy1;
+   LOCAL nx0, ny0, nx1, ny1;
+
+   // Mirror first
+   IF Mirror==1 THEN
+      X0:=X0-PivotX;
+      X1:=X1-PivotX;
+      X0:=-1*X0;
+      X1:=-1*X1;
+      X0:=X0+PivotX;
+      X1:=X1+PivotX;
+   END;
+
+   // https://stackoverflow.com/questions/2259476/rotating-a-point-about-another-point-2d#2259502
+   cs:=sin(Angle); cc:=cos(Angle);
+   
+   // Translate points to origin
+   wx0:=X0-PivotX; wy0:=Y0-PivotY;
+   wx1:=X1-PivotX; wy1:=Y1-PivotY;
+
+   // Rotate points
+   nx0:=wx0*cc-wy0*cs; ny0:=wx0*cs+wy0*cc;
+   nx1:=wx1*cc-wy1*cs; ny1:=wx1*cs+wy1*cc;
+
+   // Translate points back
+   wx0:=FLOOR(0.5+nx0+PivotX); wy0:=FLOOR(0.5+ny0+PivotY);
+   wx1:=FLOOR(0.5+nx1+PivotX); wy1:=FLOOR(0.5+ny1+PivotY);
+
+   // Draw the rotated line around pivot point P
+   LINE_P(G1, wx0, wy0, wx1, wy1, lcolor);
+   // Draw a line name, if a name is provided
+   IF name<>"" THEN
+      TEXTOUT_P(name, G1, wx0, wy0);
+   END;
+   RETURN {wx0, wy0, wx1, wy1};
+END;
+
+LOCAL Rotate_Point(X, Y, Angle, Mirror, PivotX, PivotY)
+BEGIN
+   LOCAL cs, cc; // Calculated sine and cosine
+   LOCAL wx, wy;
+   LOCAL nx, ny;
+
+   // Mirror first
+   IF Mirror==1 THEN
+      X:=X-PivotX;
+      X:=-1*X;
+      X:=X+PivotX;
+   END;
+
+   // https://stackoverflow.com/questions/2259476/rotating-a-point-about-another-point-2d#2259502
+   cs:=sin(Angle); cc:=cos(Angle);
+   wx:=X-PivotX; wy:=Y-PivotY;  // Translate point to origin
+   nx:=wx*cc-wy*cs; ny:=wx*cs+wy*cc; // Rotate point
+   wx:=FLOOR(0.5+nx+PivotX); wy:=FLOOR(0.5+ny+PivotY); // Translate point back
+
+   RETURN {wx, wy};
+END;
+
+LOCAL On_Grid (val)
+BEGIN
+   RETURN FLOOR(val/10+0.5)*10;
+END;
+
+LOCAL DEBOUNCE_MOUSE()
+BEGIN
+   LOCAL c;
+   WHILE 1 DO
+      IFERR c:=MOUSE() THEN
+      END;
+      c:=c[1];
+      IF SIZE(c)==0 THEN BREAK; END;
+   END;
+END;
+
+LOCAL dln (dx1, dy1, dx2, dy2)
+BEGIN
+   RETURN "DRAW_LINE("+dx1+"+X,"+dy1+"+Y,"+dx2+"+X,"+dy2+"+Y,"+" Angle, Mirror, X, Y, lcolor,"""");";
+END;
+
+// { "R", selected, sizex, sizey, posx, posy, orientation, pin names visible, mirror }
+// { "V", selected, sizex, sizey, posx, posy, orientation, pin names visible, mirror }
+// { "G", selected, sizex, sizey, posx, posy, orientation, pin names visible, mirror }
+// etc. for all the parts
+// { "T", selected, sizex, sizey, posx, posy, orientation, rel ptr part, text, name, text visible }
+// { "P", selected, startx, starty, endx, endy, rel ptr part, name, node name, node #}
+// { "W", selected, startx, starty, endx, endy, node name, node #}
+// { "J", selected, posx, posy, node name, node #}
+
+// The big resistor box is 60 x 20 pixels
+LOCAL DRAW_R(X, Y, Angle, Mirror, lcolor) // Angle is in degrees for all the parts
+BEGIN
+   EXPR(dln(-30,   0, -25, -10));
+   EXPR(dln(-25, -10, -15,  10));
+   EXPR(dln(-15,  10,  -5, -10));
+   EXPR(dln( -5, -10,   5,  10));
+   EXPR(dln(  5,  10,  15, -10));
+   EXPR(dln( 15, -10,  25,  10));
+   EXPR(dln( 25,  10,  30,  0));
+END;
+
+LOCAL New_R(x, y)
+BEGIN
+   LOCAL j;
+
+   j:=SIZE(Items)+1;
+   // Order is important for the relative references to work
+   Items[j+0]:={"R", 0, 60, 20, x, y, 0, 0, 0};
+   Items[j+1]:={"P", 0, x-40, y, x-30, y, -1, "k", "", -1}; // First pin
+   Items[j+2]:={"P", 0, x+40, y, x+30, y, -2, "m", "", -1}; // Second pin
+   Items[j+3]:={"T", 0, 16, 10, x-30, y-20, 0, -3, "R?", "Ref", 1};
+   Items[j+4]:={"T", 0, 32, 10, x-30, y+10, 0, -4, "1000", "Val", 1};
+END;
+
+// The small resistor box is 40 x 20 pixels
+LOCAL DRAW_R2(X, Y, Angle, Mirror, lcolor)
+BEGIN
+   EXPR(dln(-20,  0, -17, -7));
+   EXPR(dln(-17, -7, -10,  7));
+   EXPR(dln(-10,  7,  -3, -7));
+   EXPR(dln( -3, -7,   3,  7));
+   EXPR(dln(  3,  7,  10, -7));
+   EXPR(dln( 10, -7,  17,  7));
+   EXPR(dln( 17,  7,  20,  0));
+END;
+
+LOCAL New_R2(x, y)
+BEGIN
+   LOCAL j;
+
+   j:=SIZE(Items)+1;
+   // Order is important for the relative references to work
+   Items[j+0]:={"R2", 0, 40, 20, x, y, 0, 0, 0};
+   Items[j+1]:={"P", 0, x-30, y, x-20, y, -1, "k", "", -1}; // First pin
+   Items[j+2]:={"P", 0, x+30, y, x+20, y, -2, "m", "", -1}; // Second pin
+   Items[j+3]:={"T", 0, 16, 10, x-30, y-20, 0, -3, "R?", "Ref", 1};
+   Items[j+4]:={"T", 0, 32, 10, x-30, y+10, 0, -4, "1000", "Val", 1};
+END;
+
+// The resistor with voltage, current, and power indicator
+LOCAL DRAW_R3(X, Y, Angle, Mirror, lcolor, inum)
+BEGIN
+   EXPR(dln(-20,  0, -17, -7));
+   EXPR(dln(-17, -7, -10,  7));
+   EXPR(dln(-10,  7,  -3, -7));
+   EXPR(dln( -3, -7,   3,  7));
+   EXPR(dln(  3,  7,  10, -7));
+   EXPR(dln( 10, -7,  17,  7));
+   EXPR(dln( 17,  7,  20,  0));
+   // Current arrow
+   IF Items(inum+6, 11) > 0 THEN
+      EXPR(dln( -15, -17,  15,  -17));
+      EXPR(dln( 10,  -22,  15,  -17));
+      EXPR(dln( 10,  -12,  15,  -17));
+   END;  
+   // '+' and '-'
+   IF Items(inum+5, 11) > 0 THEN
+      EXPR(dln( -30,  -10,  -20,  -10));
+      EXPR(dln( -25,  -15,  -25,  -5));
+      IF (Angle MOD 180)==0 THEN
+         EXPR(dln( 20,  -10,  30,  -10));
+      ELSE
+         EXPR(dln( 25,  -15,  25,  -5));
+      END;
+   END;
+END;
+
+LOCAL New_R3(x, y)
+BEGIN
+   LOCAL j;
+
+   j:=SIZE(Items)+1;
+   // Order is important for the relative references to work
+   Items[j+0]:={"R3", 0, 40, 20, x, y, 0, 0, 0};
+   Items[j+1]:={"P", 0, x-30, y, x-20, y, -1, "k", "", -1}; // First pin
+   Items[j+2]:={"P", 0, x+30, y, x+20, y, -2, "m", "", -1}; // Second pin
+   Items[j+3]:={"T", 0, 16, 10, x+30, y, 0, -3, "R?", "Ref", 1};
+   Items[j+4]:={"T", 0, 32, 10, x+30, y+10, 0, -4, "1000", "Val", 1};
+   Items[j+5]:={"T", 0, 32, 10, x+30, y+20, 0, -5, "?", "V", 2};
+   Items[j+6]:={"T", 0, 32, 10, x+30, y+30, 0, -6, "?", "I", 2};
+   Items[j+7]:={"T", 0, 32, 10, x+30, y+40, 0, -7, "?", "P", 2};
+END;
+
+LOCAL DRAW_C(X, Y, Angle, Mirror, lcolor)
+BEGIN
+   EXPR(dln(-5, -10, -5, 10));
+   EXPR(dln( 5, -10,  5, 10));
+END;
+
+LOCAL New_C(x, y)
+BEGIN
+   LOCAL j;
+
+   j:=SIZE(Items)+1;
+   Items[j+0]:={"C", 0, 20, 20, x, y, 0, 0, 0};
+   Items[j+1]:={"P", 0, x-20, y, x-5, y, -1, "k", "", -1};
+   Items[j+2]:={"P", 0, x+20, y, x+5, y, -2, "m", "", -1};
+   Items[j+3]:={"T", 0, 16, 10, x-30, y-10, 0, -3, "C?", "Ref", 1};
+   Items[j+4]:={"T", 0, 32, 10, x-30, y+10, 0, -4, "1E-6", "Val", 1};
+END;
+
+LOCAL DRAW_L(X, Y, Angle, Mirror, lcolor)
+BEGIN
+   LOCAL pr; // Point rotated
+   LOCAL Angle1, Angle2;
+
+   Angle1:=Angle;
+   Angle2:=Angle+180;
+   
+   pr:=Rotate_Point(X-15, Y, Angle, Mirror, X, Y);
+   ARC_P(G1, pr[1], pr[2], 5, Angle1, Angle2, lcolor);
+   pr:=Rotate_Point(X-5, Y, Angle, Mirror, X, Y);
+   ARC_P(G1, pr[1], pr[2], 5, Angle1, Angle2, lcolor);
+   pr:=Rotate_Point(X+5, Y, Angle, Mirror, X, Y);
+   ARC_P(G1, pr[1], pr[2], 5, Angle1, Angle2, lcolor);
+   pr:=Rotate_Point(X+15, Y, Angle, Mirror, X, Y);
+   ARC_P(G1, pr[1], pr[2], 5, Angle1, Angle2, lcolor);
+END;
+
+LOCAL New_L(x, y)
+BEGIN
+   LOCAL j;
+
+   j:=SIZE(Items)+1;
+   Items[j+0]:={"L", 0, 40, 20, x, y, 0, 0, 0};
+   Items[j+1]:={"P", 0, x-30, y, x-20, y, -1, "k", "", -1};
+   Items[j+2]:={"P", 0, x+30, y, x+20, y, -2, "m", "", -1};
+   Items[j+3]:={"T", 0, 16, 10, x-30, y-20, 0, -3, "L?", "Ref", 1};
+   Items[j+4]:={"T", 0, 32, 10, x-30, y+10, 0, -4, "1E-3", "Val", 1};
+END;
+
+// Complex impedance
+LOCAL DRAW_IMP(X, Y, Angle, Mirror, lcolor)
+BEGIN
+   EXPR(dln(-20, -5, 20, -5));
+   EXPR(dln(-20, -5, -20, 5));
+   EXPR(dln(-20, 5, 20, 5));
+   EXPR(dln(20, -5, 20, 5));
+END;
+
+LOCAL New_IMP(x, y)
+BEGIN
+   LOCAL j;
+
+   j:=SIZE(Items)+1;
+   Items[j+0]:={"IMP", 0, 40, 20, x, y, 0, 0, 0};
+   Items[j+1]:={"P", 0, x-30, y, x-20, y, -1, "k", "", -1};
+   Items[j+2]:={"P", 0, x+30, y, x+20, y, -2, "m", "", -1};
+   Items[j+3]:={"T", 0, 16, 10, x+20, y-20, 0, -3, "Z?", "Ref", 1};
+   Items[j+4]:={"T", 0, 32, 10, x+20, y+10, 0, -4, "1"+CHAR(8737)+"45", "Z", 1};
+END;
+
+// Ideal transformer
+LOCAL DRAW_IDTR(X, Y, Angle, Mirror, lcolor)
+BEGIN
+   LOCAL pr; // Point rotated
+   LOCAL Angle1, Angle2;
+
+   IF (Angle MOD 180)==0 THEN
+       IF Mirror==0 THEN
+        Angle1:=Angle+270;
+        Angle2:=Angle+90;
+     ELSE
+        Angle1:=Angle+90;
+        Angle2:=Angle+270;
+     END;
+   ELSE
+       IF Mirror==0 THEN
+        Angle1:=Angle+90;
+        Angle2:=Angle+270;
+     ELSE
+        Angle1:=Angle+270;
+        Angle2:=Angle+90;
+     END;
+   END;
+   
+   pr:=Rotate_Point(X-10, Y-15, Angle, Mirror, X, Y);
+   ARC_P(G1, pr[1], pr[2], 5, Angle1, Angle2, lcolor);
+   pr:=Rotate_Point(X-10, Y-5, Angle, Mirror, X, Y);
+   ARC_P(G1, pr[1], pr[2], 5, Angle1, Angle2, lcolor);
+   pr:=Rotate_Point(X-10, Y+5, Angle, Mirror, X, Y);
+   ARC_P(G1, pr[1], pr[2], 5, Angle1, Angle2, lcolor);
+   pr:=Rotate_Point(X-10, Y+15, Angle, Mirror, X, Y);
+   ARC_P(G1, pr[1], pr[2], 5, Angle1, Angle2, lcolor);
+
+   pr:=Rotate_Point(X+10, Y-15, Angle, Mirror, X, Y);
+   ARC_P(G1, pr[1], pr[2], 5, Angle2, Angle1, lcolor);
+   pr:=Rotate_Point(X+10, Y-5, Angle, Mirror, X, Y);
+   ARC_P(G1, pr[1], pr[2], 5, Angle2, Angle1, lcolor);
+   pr:=Rotate_Point(X+10, Y+5, Angle, Mirror, X, Y);
+   ARC_P(G1, pr[1], pr[2], 5, Angle2, Angle1, lcolor);
+   pr:=Rotate_Point(X+10, Y+15, Angle, Mirror, X, Y);
+   ARC_P(G1, pr[1], pr[2], 5, Angle2, Angle1, lcolor);
+   
+   // Draw the N:1 because text can not be rotated
+   EXPR(dln(-10, -28, -10, -22));
+   EXPR(dln(-4, -28, -4, -22));
+   IF Mirror==0 THEN
+      EXPR(dln(-10, -28, -4, -22));
+   ELSE
+      EXPR(dln(-10, -22, -4, -28));
+   END;
+
+   EXPR(dln(7, -28, 7, -22));
+   IF Mirror==0 THEN
+      EXPR(dln(5, -26, 7, -28));
+   ELSE
+      EXPR(dln(9, -26, 7, -28));
+   END;
+END;
+
+LOCAL New_IDTR(x, y)
+BEGIN
+   LOCAL j;
+
+   j:=SIZE(Items)+1;
+   Items[j+0]:={"IDTR", 0, 20, 40, x, y, 0, 0, 0};
+   Items[j+1]:={"P", 0, x-20, y-20, x-10, y-20, -1, "kp", "", -1};
+   Items[j+2]:={"P", 0, x-20, y+20, x-10, y+20, -2, "mp", "", -1};
+   Items[j+3]:={"P", 0, x+20, y-20, x+10, y-20, -3, "ks", "", -1};
+   Items[j+4]:={"P", 0, x+20, y+20, x+10, y+20, -4, "ms", "", -1};
+   Items[j+5]:={"T", 0, 16, 10, x, y+30, 0, -5, "TR?", "Ref", 1};
+   Items[j+6]:={"T", 0, 32, 10, x, y+40, 0, -6, "10", "N", 2};
+END;
+
+// DC voltage source
+DRAW_V(X, Y, Angle, Mirror, lcolor)
+BEGIN
+   ARC_P(G1, X, Y, 15, lcolor);
+   EXPR(dln(-3, -10, 3, -10));
+   EXPR(dln(0, -13, 0, -7));
+   EXPR(dln(-3, 10, 3, 10));
+END;
+
+LOCAL New_V(x, y)
+BEGIN
+   LOCAL j;
+
+   j:=SIZE(Items)+1;
+   Items[j+0]:={"V", 0, 40, 40, x, y, 0, 0, 0};
+   Items[j+1]:={"P", 0, x, y-30, x, y-15, -1, "+", "", -1};
+   Items[j+2]:={"P", 0, x, y+30, x, y+15, -2, "-", "", -1};
+   Items[j+3]:={"T", 0, 16, 10, x+20, y, 0, -3, "V?", "Ref", 1};
+   Items[j+4]:={"T", 0, 16, 10, x+20, y+10, 0, -4, "10", "Voltage", 1};
+END;
+
+// AC Voltage source
+DRAW_Vac(X, Y, Angle, Mirror, lcolor)
+BEGIN
+   LOCAL pr; // Point rotated
+   LOCAL Angle1, Angle2;
+   
+   ARC_P(G1, X, Y, 15, lcolor);
+   EXPR(dln(-3, -10, 3, -10));
+   EXPR(dln(0, -13, 0, -7));
+   EXPR(dln(-3, 10, 3, 10));
+
+   Angle1:=Angle;
+   Angle2:=Angle+180;
+   
+   pr:=Rotate_Point(X-5, Y, Angle, Mirror, X, Y);
+   ARC_P(G1, pr[1], pr[2], 5, Angle1, Angle2, lcolor);
+   pr:=Rotate_Point(X+5, Y, Angle, Mirror, X, Y);
+   ARC_P(G1, pr[1], pr[2], 5, Angle2, Angle1, lcolor);
+
+END;
+
+LOCAL New_Vac(x, y)
+BEGIN
+   LOCAL j;
+
+   j:=SIZE(Items)+1;
+   Items[j+0]:={"VAC", 0, 40, 40, x, y, 0, 0, 0};
+   Items[j+1]:={"P", 0, x, y-30, x, y-15, -1, "+", "", -1};
+   Items[j+2]:={"P", 0, x, y+30, x, y+15, -2, "-", "", -1};
+   Items[j+3]:={"T", 0, 16, 10, x+20, y-10, 0, -3, "V?", "Ref", 1};
+   Items[j+4]:={"T", 0, 16, 10, x+20, y, 0, -4, "1.00"+CHAR(8737)+"0", "V", 1};
+END;
+
+LOCAL DRAW_OpAmp(X, Y, Angle, Mirror, lcolor)
+BEGIN
+   EXPR(dln(-30, -30, 20, 0));
+   EXPR(dln(20, 0,  -30, 30));
+   EXPR(dln(-30, 30, -30, -30));
+   // Plus
+   EXPR(dln(-28, 20, -22, 20));
+   EXPR(dln(-25, 17, -25, 23));
+   // Minus
+   IF (Angle MOD 180) == 0 THEN
+      EXPR(dln(-28, -20, -22, -20));
+   ELSE
+      EXPR(dln(-25, -17, -25, -23));
+   END;
+END;
+
+LOCAL New_OpAmp(x, y)
+BEGIN
+   LOCAL j;
+
+   j:=SIZE(Items)+1;
+   Items[j+0]:={"O", 0, 50, 60, x, y, 0, 0, 0};
+   Items[j+1]:={"P", 0, x-40, y-20, x-30, y-20, -1, "-", "", -1}; // Inverting pin
+   Items[j+2]:={"P", 0, x-40, y+20, x-30, y+20, -2, "+", "", -1}; // Non-Inverting pin
+   Items[j+3]:={"P", 0, x+30, y, x+20, y+0, -3, "O", "", -1}; // Output pin
+   Items[j+4]:={"T", 0, 16, 10, x+30, y+20, 0, -4, "U?", "Ref", 1};
+END;
+
+// DC current source
+LOCAL DRAW_I(X, Y, Angle, Mirror, lcolor)
+BEGIN
+   ARC_P(G1, X, Y, 15, lcolor);
+   EXPR(dln(0,  13,  0, -13));
+   EXPR(dln(0, -13, -5, -8));
+   EXPR(dln(0, -13,  5, -8));
+END;
+
+LOCAL New_I(x, y)
+BEGIN
+   LOCAL j;
+
+   j:=SIZE(Items)+1;
+   Items[j+0]:={"I", 0, 40, 40, x, y, 0, 0, 0};
+   Items[j+1]:={"P", 0, x, y-30, x, y-15, -1, "k", "", -1};
+   Items[j+2]:={"P", 0, x, y+30, x, y+15, -2, "m", "", -1};
+   Items[j+3]:={"T", 0, 16, 10, x+20, y-10, 0, -3, "I?", "Ref", 1};
+   Items[j+4]:={"T", 0, 16, 10, x+20, y, 0, -4, "1.00", "Current", 1};
+   Items[j+5]:={"T", 0, 16, 10, x+20, y+10, 0, -5, "1e15", "R Parallel", 0};
+END;
+
+// AC current source
+LOCAL DRAW_Iac(X, Y, Angle, Mirror, lcolor)
+BEGIN
+   LOCAL pr; // Point rotated
+   LOCAL Angle1, Angle2;
+   
+   ARC_P(G1, X, Y, 15, lcolor);
+   EXPR(dln(0,  13,  0, -13));
+   EXPR(dln(0, -13, -5, -8));
+   EXPR(dln(0, -13,  5, -8));
+   
+   Angle1:=Angle;
+   Angle2:=Angle+180;
+   
+   pr:=Rotate_Point(X-5, Y, Angle, Mirror, X, Y);
+   ARC_P(G1, pr[1], pr[2], 5, Angle1, Angle2, lcolor);
+   pr:=Rotate_Point(X+5, Y, Angle, Mirror, X, Y);
+   ARC_P(G1, pr[1], pr[2], 5, Angle2, Angle1, lcolor);
+
+END;
+
+LOCAL New_Iac(x, y)
+BEGIN
+   LOCAL j;
+
+   j:=SIZE(Items)+1;
+   Items[j+0]:={"IAC", 0, 40, 40, x, y, 0, 0, 0};
+   Items[j+1]:={"P", 0, x, y-30, x, y-15, -1, "k", "", -1};
+   Items[j+2]:={"P", 0, x, y+30, x, y+15, -2, "m", "", -1};
+   Items[j+3]:={"T", 0, 16, 10, x+20, y-10, 0, -3, "I?", "Ref", 1};
+   Items[j+4]:={"T", 0, 16, 10, x+20, y+0, 0, -4, "1.00"+CHAR(8737)+"0", "I", 1};
+   Items[j+5]:={"T", 0, 16, 10, x+20, y+20, 0, -5, "1e15", "R Parallel", 0};
+END;
+
+// Reference/GND node
+LOCAL DRAW_GND(X, Y, Angle, Mirror, lcolor)
+BEGIN
+   EXPR(dln(-10, 0, 10,  0));
+   EXPR(dln(-10, 0,  0, 10));
+   EXPR(dln( 10, 0,  0, 10));
+END;
+
+LOCAL New_GND(x, y)
+BEGIN
+   LOCAL j;
+
+   j:=SIZE(Items)+1;
+   Items[j+0]:={"G", 0, 20, 20, x, y, 0, 0, 0};
+   Items[j+1]:={"P", 0, x, y-10, x, y, -1, "GND", "", -1}; // Its pin
+END;
+
+// Net name and voltage to ground indicator
+LOCAL DRAW_NETN(X, Y, Angle, Mirror, lcolor)
+BEGIN
+   EXPR(dln(-10, 0,   0, -5));
+   EXPR(dln(0,  -5,  10, -5));
+   EXPR(dln(10, -5,  10,  5));
+   EXPR(dln(10,  5,   0,  5));
+   EXPR(dln(0,   5, -10,  0));
+END;
+
+LOCAL New_NETN(x, y)
+BEGIN
+   LOCAL j;
+
+   j:=SIZE(Items)+1;
+
+   Items[j+0]:={"N", 0, 20, 20, x, y, 0, 0, 0};
+   Items[j+1]:={"P", 0, x-20, y+10, x-10, y, -1, "n", "", -1}; // First pin
+   Items[j+2]:={"T", 0, 16, 10, x+20, y-10, 0, -2, "N?", "Ref", 1};
+   Items[j+3]:={"T", 0, 32, 10, x+20, y+10, 0, -3, "?", "Val", 1};
+END;
+
+LOCAL DRAW_DIODE(X, Y, Angle, Mirror, lcolor)
+BEGIN
+   EXPR(dln(-10, -10, -10, 10));
+   EXPR(dln(-10, 10, 10, 0));
+   EXPR(dln(10, 0, -10, -10));
+   EXPR(dln(10, -10, 10, 10));
+END;
+
+LOCAL New_DIODE(x, y)
+BEGIN
+   LOCAL j;
+
+   j:=SIZE(Items)+1;
+
+   Items[j+0]:={"D", 0, 20, 20, x, y, 0, 0, 0};
+   Items[j+1]:={"P", 0, x-30, y, x-10, y, -1, "A", "", -1}; // First pin
+   Items[j+2]:={"P", 0, x+30, y, x+10, y, -2, "K", "", -1}; // Second pin
+   Items[j+3]:={"T", 0, 16, 10, x-10, y+10, 0, -3, "D?", "Ref", 1};
+   Items[j+4]:={"T", 0, 16, 10, x-10, y+20, 0, -4, "8.32E-10", "Is", 0};
+   Items[j+5]:={"T", 0, 16, 10, x-10, y+30, 0, -5, "2", "n", 0};
+END;
+
+LOCAL DRAW_LED(X, Y, Angle, Mirror, lcolor)
+BEGIN
+   EXPR(dln(-10, -10, -10, 10));
+   EXPR(dln(-10, 10, 10, 0));
+   EXPR(dln(10, 0, -10, -10));
+   EXPR(dln(10, -10, 10, 10));
+   // The light arrows
+   EXPR(dln(-5, -10, -5, -15));
+   EXPR(dln(-8, -15, -2, -15));
+   EXPR(dln(-8, -15, -5, -20));
+   EXPR(dln(-2, -15, -5, -20));
+
+   EXPR(dln(5, -10, 5, -15));
+   EXPR(dln(2, -15, 8, -15));
+   EXPR(dln(2, -15, 5, -20));
+   EXPR(dln(8, -15, 5, -20));
+END;
+
+LOCAL New_LED(x, y)
+BEGIN
+   LOCAL j;
+
+   j:=SIZE(Items)+1;
+
+   Items[j+0]:={"LED", 0, 20, 20, x, y, 0, 0, 0};
+   Items[j+1]:={"P", 0, x-30, y, x-10, y, -1, "A", "", -1}; // First pin
+   Items[j+2]:={"P", 0, x+30, y, x+10, y, -2, "K", "", -1}; // Second pin
+   Items[j+3]:={"T", 0, 16, 10, x-10, y+10, 0, -3, "LED?", "Ref", 1};
+   Items[j+4]:={"T", 0, 16, 10, x-10, y+20, 0, -4, "1E-18", "Is", 0};
+   Items[j+5]:={"T", 0, 16, 10, x-10, y+30, 0, -5, "1.8", "n", 0};
+END;
+
+LOCAL DRAW_ZENER(X, Y, Angle, Mirror, lcolor)
+BEGIN
+   EXPR(dln(-10, -10, -10, 10));
+   EXPR(dln(-10, 10, 10, 0));
+   EXPR(dln(10, 0, -10, -10));
+   EXPR(dln(10, -10, 10, 10));
+   // The two little 'wings'
+   EXPR(dln(10, -10, 7, -13));
+   EXPR(dln(10, 10, 13, 13));
+END;
+
+LOCAL New_ZENER(x, y)
+BEGIN
+   LOCAL j;
+
+   j:=SIZE(Items)+1;
+
+   Items[j+0]:={"Z", 0, 20, 20, x, y, 0, 0, 0};
+   Items[j+1]:={"P", 0, x-30, y, x-10, y, -1, "A", "", -1}; // First pin
+   Items[j+2]:={"P", 0, x+30, y, x+10, y, -2, "K", "", -1}; // Second pin
+   Items[j+3]:={"T", 0, 16, 10, x-10, y+10, 0, -3, "D?", "Ref", 1};
+   Items[j+4]:={"T", 0, 16, 10, x-10, y+20, 0, -4, "1.0E-11", "Is", 0};
+   Items[j+5]:={"T", 0, 16, 10, x-10, y+30, 0, -5, "2", "n", 0};
+   Items[j+6]:={"T", 0, 16, 10, x-10, y+40, 0, -6, "12", "VZt", 0};
+   Items[j+7]:={"T", 0, 16, 10, x-10, y+50, 0, -7, "21.0E-3", "IZt", 0};
+   Items[j+8]:={"T", 0, 16, 10, x-10, y+60, 0, -8, "9", "rz", 0};
+END;
+
+LOCAL DRAW_NPN(X, Y, Angle, Mirror, lcolor)
+BEGIN
+   EXPR(dln(0, -15, 0, 15));
+   EXPR(dln(-10, 0, 0, 0));
+   EXPR(dln(0, -5, 10, -15));
+   EXPR(dln(0, 5, 10, 15));
+   // The arrow point
+   EXPR(dln(10, 10, 10, 15));
+   EXPR(dln(5, 15, 10, 15));
+   EXPR(dln(5, 15, 10, 10));
+END;
+
+LOCAL New_NPN(x, y)
+BEGIN
+   LOCAL j;
+
+   j:=SIZE(Items)+1;
+
+   Items[j+0]:={"NPN", 0, 20, 40, x, y, 0, 0, 0};
+   Items[j+1]:={"P", 0, x+10, y-30, x+10, y-15, -1, "C", "", -1}; // Collector
+   Items[j+2]:={"P", 0, x-20, y, x-10, y, -2, "B", "", -1}; // Base
+   Items[j+3]:={"P", 0, x+10, y+30, x+10, y+15, -3, "E", "", -1}; // Emitter
+   Items[j+4]:={"T", 0, 16, 10, x+20, y, 0, -4, "Q?", "Ref", 1};
+   Items[j+5]:={"T", 0, 16, 10, x+20, y-10, 0, -5, "1.0E-12", "Is", 0};
+   Items[j+6]:={"T", 0, 16, 10, x+20, y+10, 0, -6, "100", "Beta", 0};
+   Items[j+7]:={"T", 0, 16, 10, x+20, y+20, 0, -7, "10", "Rev_Beta", 0};
+   Items[j+8]:={"T", 0, 16, 10, x+20, y+30, 0, -8, "1e6", "VA", 0};
+END;
+
+LOCAL DRAW_ANPN(X, Y, Angle, Mirror, lcolor)
+BEGIN
+   DRAW_NPN(X, Y, Angle, Mirror, lcolor);
+END;
+
+LOCAL New_ANPN(x, y)
+BEGIN
+   LOCAL j;
+
+   j:=SIZE(Items)+1;
+
+   Items[j+0]:={"ANPN", 0, 20, 40, x, y, 0, 0, 0};
+   Items[j+1]:={"P", 0, x+10, y-30, x+10, y-15, -1, "C", "", -1}; // Collector
+   Items[j+2]:={"P", 0, x-20, y, x-10, y, -2, "B", "", -1}; // Base
+   Items[j+3]:={"P", 0, x+10, y+30, x+10, y+15, -3, "E", "", -1}; // Emitter
+   Items[j+4]:={"T", 0, 16, 10, x+20, y, 0, -4, "Q?", "Ref", 1};
+   Items[j+5]:={"T", 0, 16, 10, x+20, y-10, 0, -5, "0.7", "VBE", 0};
+   Items[j+6]:={"T", 0, 16, 10, x+20, y+10, 0, -6, "100", "Beta", 0};
+   Items[j+7]:={"T", 0, 16, 10, x+20, y+30, 0, -7, "1e6", "VA", 0};
+END;
+
+
+LOCAL DRAW_PNP(X, Y, Angle, Mirror, lcolor)
+BEGIN
+   EXPR(dln(0, -15, 0, 15));
+   EXPR(dln(-10, 0, 0, 0));
+   EXPR(dln(0, -5, 10, -15));
+   EXPR(dln(0, 5, 10, 15));
+   // The arrow
+   EXPR(dln(0, -5, 5, -5));
+   EXPR(dln(5, -5, 0, -10));
+END;
+
+LOCAL New_PNP(x, y)
+BEGIN
+   LOCAL j;
+
+   j:=SIZE(Items)+1;
+
+   Items[j+0]:={"PNP", 0, 20, 40, x, y, 0, 0, 0};
+   Items[j+1]:={"P", 0, x+10, y-30, x+10, y-15, -1, "E", "", -1}; // Emitter
+   Items[j+2]:={"P", 0, x-20, y, x-10, y, -2, "B", "", -1}; // Base
+   Items[j+3]:={"P", 0, x+10, y+30, x+10, y+15, -3, "C", "", -1}; // Collector
+   Items[j+4]:={"T", 0, 16, 10, x+20, y, 0, -4, "Q?", "Ref", 1};
+   Items[j+5]:={"T", 0, 16, 10, x+20, y-10, 0, -5, "1.0E-12", "Is", 0};
+   Items[j+6]:={"T", 0, 16, 10, x+20, y+10, 0, -6, "100", "Beta", 0};
+   Items[j+7]:={"T", 0, 16, 10, x+20, y+20, 0, -7, "10", "Rev_Beta", 0};
+   Items[j+8]:={"T", 0, 16, 10, x+20, y+30, 0, -8, "1e6", "VA", 0};
+END;
+
+LOCAL DRAW_APNP(X, Y, Angle, Mirror, lcolor)
+BEGIN
+   DRAW_PNP(X, Y, Angle, Mirror, lcolor);
+END;
+
+LOCAL New_APNP(x, y)
+BEGIN
+   LOCAL j;
+
+   j:=SIZE(Items)+1;
+
+   Items[j+0]:={"APNP", 0, 20, 40, x, y, 0, 0, 0};
+   Items[j+1]:={"P", 0, x+10, y-30, x+10, y-15, -1, "E", "", -1}; // Emitter
+   Items[j+2]:={"P", 0, x-20, y, x-10, y, -2, "B", "", -1}; // Base
+   Items[j+3]:={"P", 0, x+10, y+30, x+10, y+15, -3, "C", "", -1}; // Collector
+   Items[j+4]:={"T", 0, 16, 10, x+20, y, 0, -4, "Q?", "Ref", 1};
+   Items[j+5]:={"T", 0, 16, 10, x+20, y-10, 0, -5, "0.7", "VEB", 0};
+   Items[j+6]:={"T", 0, 16, 10, x+20, y+10, 0, -6, "100", "Beta", 0};
+   Items[j+7]:={"T", 0, 16, 10, x+20, y+30, 0, -7, "1e6", "VA", 0};
+END;
+
+LOCAL DRAW_NMOS(X, Y, Angle, Mirror, lcolor)
+BEGIN
+   EXPR(dln(0, -15, 0, 15));
+   EXPR(dln(-5, -10, -5, 10));
+   EXPR(dln(-0, -10, 10, -10));
+   EXPR(dln(-0, 10, 10, 10));  
+   // The arrow point
+   EXPR(dln(7, 7, 10, 10));
+   EXPR(dln(10, 10, 7, 13));
+   EXPR(dln(7, 13, 7, 7));
+END;
+
+LOCAL New_NMOS(x, y)
+BEGIN
+   LOCAL j;
+
+   j:=SIZE(Items)+1;
+
+   Items[j+0]:={"NMOS", 0, 20, 40, x, y, 0, 0, 0};
+   Items[j+1]:={"P", 0, x+10, y-30, x+10, y-10, -1, "D", "", -1}; // Drain
+   Items[j+2]:={"P", 0, x-20, y, x-5, y, -2, "G", "", -1}; // Gate
+   Items[j+3]:={"P", 0, x+10, y+30, x+10, y+10, -3, "S", "", -1}; // Source
+   Items[j+4]:={"T", 0, 16, 10, x+20, y, 0, -4, "Q?", "Ref", 1};
+   Items[j+5]:={"T", 0, 16, 10, x+20, y-10, 0, -5, "2", "Vt", 0};
+   Items[j+6]:={"T", 0, 16, 10, x+20, y+10, 0, -6, "100E-6", "Kn'(W/L)", 0};
+   Items[j+7]:={"T", 0, 16, 10, x+20, y+20, 0, -7, "1e8", "VA", 0};
+END;
+
+LOCAL DRAW_PMOS(X, Y, Angle, Mirror, lcolor)
+BEGIN
+   EXPR(dln(0, -15, 0, 15));
+   EXPR(dln(-5, -10, -5, 10));
+   EXPR(dln(0, -10, 10, -10));
+   EXPR(dln(0, 10, 10, 10));  
+   // The arrow point
+   EXPR(dln(0, -10, 3, -13));
+   EXPR(dln(3, -13, 3, -7));
+   EXPR(dln(3, -7, 0, -10));
+END;
+
+LOCAL New_PMOS(x, y)
+BEGIN
+   LOCAL j;
+
+   j:=SIZE(Items)+1;
+
+   Items[j+0]:={"PMOS", 0, 20, 40, x, y, 0, 0, 0};
+   Items[j+1]:={"P", 0, x+10, y-30, x+10, y-10, -1, "S", "", -1}; // Source
+   Items[j+2]:={"P", 0, x-20, y, x-5, y, -2, "G", "", -1}; // Gate
+   Items[j+3]:={"P", 0, x+10, y+30, x+10, y+10, -3, "D", "", -1}; // Drain
+   Items[j+4]:={"T", 0, 16, 10, x+20, y, 0, -4, "Q?", "Ref", 1};
+   Items[j+5]:={"T", 0, 16, 10, x+20, y-10, 0, -5, "2", "Vt", 0};
+   Items[j+6]:={"T", 0, 16, 10, x+20, y+10, 0, -6, "100e-6", "Kp'(W/L)", 0};
+   Items[j+7]:={"T", 0, 16, 10, x+20, y+20, 0, -7, "1e8", "VA", 0};
+END;
+
+// Current indicator
+LOCAL DRAW_MetA(X, Y, Angle, Mirror, lcolor) // Current Indicator
+BEGIN
+   EXPR(dln(0,  13,  0, -13));
+   EXPR(dln(0, -13, -5, -8));
+   EXPR(dln(0, -13,  5, -8));
+END;
+
+LOCAL New_MetA(x, y) // Current Indicator
+BEGIN
+   LOCAL j, k, best_dis:=1000, new_dis, xRef_part:=0, xRef:="?", Angle:=0;
+   
+   // Find the closest suported part and use its Ref as xRef
+   FOR k FROM 1 TO SIZE(Items) STEP 1 DO
+      IF Items(k,1)=="R" OR Items(k,1)=="R2" OR Items(k,1)=="R3" OR Items(k,1)=="IMP" OR Items(k,1)=="V" OR Items(k,1)=="VAC" OR Items(k,1)=="D" OR Items(k,1)=="Z" OR Items(k,1)=="LED" THEN
+         new_dis:=sqrt( ((x-Items(k,5))^2) + ((y-Items(k,6))^2) );
+         IF new_dis<best_dis THEN
+            best_dis:=new_dis;
+            xRef_part:=k;
+         END;
+      END;
+   END;
+   
+   IF best_dis<60 AND xRef_part<>0 THEN
+      xRef:=Items(xRef_part+3,9);
+      // Also set the arrow pointing in the correct direction
+      IF Items(xRef_part,1)=="R" OR Items(xRef_part,1)=="R2" OR Items(xRef_part,1)=="R3" OR
+         Items(xRef_part,1)=="IMP" OR Items(xRef_part,1)=="D" OR Items(xRef_part,1)=="Z" OR
+         Items(xRef_part,1)=="LED" THEN
+         Angle:=(Items(xRef_part,7)+90 MOD 360.0); 
+      END;
+      IF Items(xRef_part,1)=="V" OR Items(xRef_part,1)=="VAC" THEN
+         Angle:=Items(xRef_part,7);
+      END;
+   END;
+   
+   j:=SIZE(Items)+1;
+   
+   Items[j+0]:={"MetA", 0, 30, 20, x, y, Angle, 0, 0};
+   Items[j+1]:={"T", 0, 30, 10, x+20, y-30, 0, -1, "M?", "Ref",  0};
+   Items[j+2]:={"T", 0, 30, 10, x+20, y-20, 0, -2, xRef, "xRef", 1}; // The element we want the current from
+   Items[j+3]:={"T", 0, 30, 10, x+20, y,    0, -3, "?",  "Ikm",  1}; // The computed current.  Updated after solution
+END;
+
+// Voltage indicator
+LOCAL DRAW_MetV(X, Y, Angle, Mirror, lcolor) // Voltage Indicator
+BEGIN
+   LOCAL pr; // Point rotated
+   pr:=Rotate_Point(X-16, Y, Angle, Mirror, X, Y);
+   ARC_P(G1, pr[1], pr[2], 4, lcolor);
+   EXPR(dln(-18, 0, -14, 0));
+   EXPR(dln(-16, -2, -16, 2));
+   pr:=Rotate_Point(X+16, Y, Angle, Mirror, X, Y);
+   ARC_P(G1, pr[1], pr[2], 4, lcolor);
+   IF (Angle MOD 180) == 0 THEN
+      EXPR(dln(14, 0, 18, 0));
+   ELSE
+      EXPR(dln(16, -2, 16, 2));
+   END;
+END;
+
+LOCAL New_MetV(x, y) // Voltage Indicator
+BEGIN
+   LOCAL j;
+
+   j:=SIZE(Items)+1;
+
+   Items[j+0]:={"MetV", 0, 40, 20, x, y, 0, 0, 0};
+   Items[j+1]:={"P", 0, x-30, y, x-20, y, -1, "+", "", -1}; // First pin
+   Items[j+2]:={"P", 0, x+30, y, x+20, y, -2, "-", "", -1}; // Second pin
+   Items[j+3]:={"T", 0, 16, 10, x-30, y-20, 0, -3, "M?", "Ref", 1};
+   Items[j+4]:={"T", 0, 32, 10, x-30, y+10, 0, -4, "?", "V+-", 1};
+END;
+
+// Short circuit, mostly used to monitor current
+LOCAL DRAW_SC(X, Y, Angle, Mirror, lcolor)
+BEGIN
+   EXPR(dln(0, -20, 0,  20));
+   // Current arrow
+   EXPR(dln( 10, -15, 10, 15));
+   EXPR(dln( 13, -12, 10, -15));
+   EXPR(dln( 7, -12, 10, -15));
+END;
+
+LOCAL New_SC(x, y)
+BEGIN
+   LOCAL j;
+
+   j:=SIZE(Items)+1;
+   Items[j+0]:={"SC", 0, 40, 40, x, y, 0, 0, 0};
+   Items[j+1]:={"P", 0, x, y-30, x, y-15, -1, "k", "", -1};
+   Items[j+2]:={"P", 0, x, y+30, x, y+15, -2, "m", "", -1};
+   Items[j+3]:={"T", 0, 16, 10, x+20, y, 0, -3, "SC?", "Ref", 1};
+   Items[j+4]:={"T", 0, 16, 10, x+20, y+10, 0, -4, "?", "Ikm", 1};
+END;
+
+// DC solution options
+DRAW_DCOPT(X, Y, Angle, Mirror, lcolor)
+BEGIN
+   ARC_P(G1, X, Y, 15, lcolor);
+   EXPR(dln(-10, -3, 10, -3));
+   EXPR(dln(-6, 3, 6, 3));
+END;
+
+LOCAL New_DCOPT(x, y)
+BEGIN
+   LOCAL j;
+
+   j:=SIZE(Items)+1;
+   Items[j+0]:={"DCOPT", 0, 30, 30, x, y, 0, 0, 0};
+   Items[j+1]:={"T", 0, 16, 10, x+30, y-30, 0, -1, "DC Options", "Ref", 1};
+   Items[j+2]:={"T", 0, 16, 10, x+30, y+20, 0, -2, "1E-9", "Max Err.", 0};
+   Items[j+3]:={"T", 0, 16, 10, x+30, y+30, 0, -3, "100", "Max Iter.", 0};
+   Items[j+4]:={"T", 0, 16, 10, x+30, y+40, 0, -4, "290.1131", "Temp (K)", 0};
+   Items[j+5]:={"T", 0, 16, 10, x+30, y+50, 0, -5, "0", "Mode", 0};
+   Items[j+6]:={"T", 0, 16, 10, x+30, y+60, 0, -6, "-1", "Precision", 0};
+END;
+
+// AC solution options
+DRAW_ACOPT(X, Y, Angle, Mirror, lcolor)
+BEGIN
+   LOCAL pr; // Point rotated
+   LOCAL Angle1, Angle2;
+   
+   ARC_P(G1, X, Y, 15, lcolor);
+
+   Angle1:=Angle;
+   Angle2:=Angle+180;
+   
+   pr:=Rotate_Point(X-5, Y, Angle, Mirror, X, Y);
+   ARC_P(G1, pr[1], pr[2], 5, Angle1, Angle2, lcolor);
+   pr:=Rotate_Point(X+5, Y, Angle, Mirror, X, Y);
+   ARC_P(G1, pr[1], pr[2], 5, Angle2, Angle1, lcolor);
+END;
+
+LOCAL New_ACOPT(x, y) // AC analysis options
+BEGIN
+   LOCAL j;
+
+   j:=SIZE(Items)+1;
+   Items[j+0]:={"ACOPT", 0, 30, 30, x, y, 0, 0, 0};
+   Items[j+1]:={"T", 0, 16, 10, x+30, y-30, 0, -1, "AC Options", "Ref", 1};
+   Items[j+2]:={"T", 0, 16, 10, x+30, y+10, 0, -2, "60", "Freq.", 0};
+   Items[j+3]:={"T", 0, 16, 10, x+30, y+20, 0, -3, "0", "Ideal L&C", 0};
+   Items[j+4]:={"T", 0, 16, 10, x+30, y+30, 0, -4, "0", "Mode", 0};
+   Items[j+5]:={"T", 0, 16, 10, x+30, y+40, 0, -5, "-1", "Precision", 0};
+END;
+
+// Expression evaluator (to calculate power and such)
+DRAW_EVAL(X, Y, Angle, Mirror, lcolor)
+BEGIN
+   LOCAL pr; // Point rotated
+   LOCAL Angle1, Angle2;
+   
+   ARC_P(G1, X, Y, 15, lcolor);
+   ARC_P(G1, X, Y, 5, lcolor);
+END;
+
+LOCAL New_EVAL(x, y) // Evaluate expression
+BEGIN
+   LOCAL j;
+
+   j:=SIZE(Items)+1;
+   Items[j+0]:={"EVAL", 0, 30, 30, x, y, 0, 0, 0};
+   Items[j+1]:={"T", 0, 16, 10, x+30, y-30, 0, -1, "Eval?", "Ref", 1};
+   Items[j+2]:={"T", 0, 16, 10, x+30, y+10, 0, -2, "?", "Input", 0};
+   Items[j+3]:={"T", 0, 16, 10, x+30, y+30, 0, -3, "0", "Mode", 0};
+   Items[j+4]:={"T", 0, 16, 10, x+30, y+40, 0, -4, "-1", "Precision", 0};
+   Items[j+5]:={"T", 0, 16, 10, x+30, y+30, 0, -5, "0", "Output", 2};
+END;
+
+// Voltage controlled current source
+LOCAL DRAW_VCCS(X, Y, Angle, Mirror, lcolor)
+BEGIN
+   LOCAL pr; // Point rotated
+   // + bubble
+   pr:=Rotate_Point(X-30, Y-10, Angle, Mirror, X, Y);
+   ARC_P(G1, pr[1], pr[2], 4, lcolor);
+   EXPR(dln(-32, -10, -28, -10));
+   EXPR(dln(-30, -12, -30, -8));
+   // - bubble
+   pr:=Rotate_Point(X-30, Y+10, Angle, Mirror, X, Y);
+   ARC_P(G1, pr[1], pr[2], 4, lcolor);
+   IF (Angle MOD 180)==0 THEN
+      EXPR(dln(-32, 10, -28, 10));
+   ELSE
+      EXPR(dln(-30, 12, -30, 8));
+   END;
+   // I source body
+   EXPR(dln(5, 0, 20, -15));
+   EXPR(dln(20, -15, 35, 0));
+   EXPR(dln(35, 0, 20, 15));
+   EXPR(dln(20, 15, 5, 0));
+   // Arrow body
+   EXPR(dln(20, -10, 20, 10));
+   // Arrow point
+   //EXPR(dln(15, 5, 25, 5));
+   EXPR(dln(25, 5, 20, 10));
+   EXPR(dln(20, 10, 15, 5));
+END;
+
+LOCAL New_VCCS(x, y)
+BEGIN
+   LOCAL j;
+
+   j:=SIZE(Items)+1;
+
+   Items[j+0]:={"VCCS", 0, 60, 40, x, y, 0, 0, 0};
+   Items[j+1]:={"P", 0, x-30, y-30, x-30, y-12, -1, "vk", "", -1};
+   Items[j+2]:={"P", 0, x-30, y+30, x-30, y+12, -2, "vm", "", -1};
+   Items[j+3]:={"P", 0, x+20, y-30, x+20, y-15, -3, "ik", "", -1};
+   Items[j+4]:={"P", 0, x+20, y+30, x+20, y+15, -4, "im", "", -1};
+   Items[j+5]:={"T", 0, 16, 10, x+30, y-20, 0, -5, "I?", "Ref", 1};
+   Items[j+6]:={"T", 0, 32, 10, x+30, y+10, 0, -6, "1.0", "g", 2};
+END;
+
+// voltage controlled voltage source
+LOCAL DRAW_VCVS(X, Y, Angle, Mirror, lcolor)
+BEGIN
+   LOCAL pr; // Point rotated
+   // + bubble
+   pr:=Rotate_Point(X-30, Y-10, Angle, Mirror, X, Y);
+   ARC_P(G1, pr[1], pr[2], 4, lcolor);
+   EXPR(dln(-32, -10, -28, -10));
+   EXPR(dln(-30, -12, -30, -8));
+   // - bubble
+   pr:=Rotate_Point(X-30, Y+10, Angle, Mirror, X, Y);
+   ARC_P(G1, pr[1], pr[2], 4, lcolor);
+   IF (Angle MOD 180)==0 THEN
+      EXPR(dln(-32, 10, -28, 10));
+   ELSE
+      EXPR(dln(-30, 12, -30, 8));
+   END;
+   // V source body
+   EXPR(dln(5, 0, 20, -15));
+   EXPR(dln(20, -15, 35, 0));
+   EXPR(dln(35, 0, 20, 15));
+   EXPR(dln(20, 15, 5, 0));
+   // +
+   EXPR(dln(18, -10, 22, -10));
+   EXPR(dln(20, -12, 20, -8));
+   // -
+   IF (Angle MOD 180)==0 THEN
+      EXPR(dln(18, 10, 22, 10));
+   ELSE
+      EXPR(dln(20, 12, 20, 8));
+   END;
+END;
+
+LOCAL New_VCVS(x, y)
+BEGIN
+   LOCAL j;
+
+   j:=SIZE(Items)+1;
+
+   Items[j+0]:={"VCVS", 0, 60, 40, x, y, 0, 0, 0};
+   Items[j+1]:={"P", 0, x-30, y-30, x-30, y-12, -1, "vik", "", -1};
+   Items[j+2]:={"P", 0, x-30, y+30, x-30, y+12, -2, "vim", "", -1};
+   Items[j+3]:={"P", 0, x+20, y-30, x+20, y-15, -3, "vok", "", -1};
+   Items[j+4]:={"P", 0, x+20, y+30, x+20, y+15, -4, "vom", "", -1};
+   Items[j+5]:={"T", 0, 16, 10, x+30, y-20, 0, -5, "V?", "Ref", 1};
+   Items[j+6]:={"T", 0, 32, 10, x+30, y+10, 0, -6, "1.0", "u", 2};
+END;
+
+// Current controlled current source
+LOCAL DRAW_CCCS(X, Y, Angle, Mirror, lcolor)
+BEGIN
+   EXPR(dln(-30, -10, -30, 10));
+   // Arrow
+   EXPR(dln(-20, -10, -20, 10));
+   EXPR(dln(-25, 5, -20, 10));
+   EXPR(dln(-15, 5, -20, 10));
+   // I source body
+   EXPR(dln(5, 0, 20, -15));
+   EXPR(dln(20, -15, 35, 0));
+   EXPR(dln(35, 0, 20, 15));
+   EXPR(dln(20, 15, 5, 0));
+   // Arrow body
+   EXPR(dln(20, -10, 20, 10));
+   // Arrow point
+   //EXPR(dln(15, 5, 25, 5));
+   EXPR(dln(25, 5, 20, 10));
+   EXPR(dln(20, 10, 15, 5));
+END;
+
+LOCAL New_CCCS(x, y)
+BEGIN
+   LOCAL j;
+
+   j:=SIZE(Items)+1;
+
+   Items[j+0]:={"CCCS", 0, 60, 40, x, y, 0, 0, 0};
+   Items[j+1]:={"P", 0, x-30, y-30, x-30, y-10, -1, "i1k", "", -1};
+   Items[j+2]:={"P", 0, x-30, y+30, x-30, y+10, -2, "12m", "", -1};
+   Items[j+3]:={"P", 0, x+20, y-30, x+20, y-15, -3, "i2k", "", -1};
+   Items[j+4]:={"P", 0, x+20, y+30, x+20, y+15, -4, "i2m", "", -1};
+   Items[j+5]:={"T", 0, 16, 10, x+30, y-20, 0, -5, "I?", "Ref", 1};
+   Items[j+6]:={"T", 0, 32, 10, x+30, y+10, 0, -6, "1.0", "a", 2};
+END;
+
+// Current controlled voltage source
+LOCAL DRAW_CCVS(X, Y, Angle, Mirror, lcolor)
+BEGIN
+   EXPR(dln(-30, -10, -30, 10));
+   // Arrow
+   EXPR(dln(-20, -10, -20, 10));
+   EXPR(dln(-25, 5, -20, 10));
+   EXPR(dln(-15, 5, -20, 10));
+   // V source body
+   EXPR(dln(5, 0, 20, -15));
+   EXPR(dln(20, -15, 35, 0));
+   EXPR(dln(35, 0, 20, 15));
+   EXPR(dln(20, 15, 5, 0));
+   // +
+   EXPR(dln(18, -10, 22, -10));
+   EXPR(dln(20, -12, 20, -8));
+   // -
+   IF (Angle MOD 180)==0 THEN
+      EXPR(dln(18, 10, 22, 10));
+   ELSE
+      EXPR(dln(20, 12, 20, 8));
+   END;
+END;
+
+LOCAL New_CCVS(x, y)
+BEGIN
+   LOCAL j;
+
+   j:=SIZE(Items)+1;
+
+   Items[j+0]:={"CCVS", 0, 60, 40, x, y, 0, 0, 0};
+   Items[j+1]:={"P", 0, x-30, y-30, x-30, y-10, -1, "ik", "", -1};
+   Items[j+2]:={"P", 0, x-30, y+30, x-30, y+10, -2, "1m", "", -1};
+   Items[j+3]:={"P", 0, x+20, y-30, x+20, y-15, -3, "vk", "", -1};
+   Items[j+4]:={"P", 0, x+20, y+30, x+20, y+15, -4, "vm", "", -1};
+   Items[j+5]:={"T", 0, 16, 10, x+30, y-20, 0, -5, "V?", "Ref", 1};
+   Items[j+6]:={"T", 0, 32, 10, x+30, y+10, 0, -6, "1.0", "r", 2};
+END;
+
+// Wire
+LOCAL New_W(x, y)
+BEGIN
+   IF newwire=0 THEN
+      newwire:=1;
+      wsx:=On_Grid(x);
+      wsy:=On_Grid(y);
+   ELSE
+      Add_undo();
+      newwire:=0;
+      wex:=On_Grid(x);
+      wey:=On_Grid(y);
+      IF (wsx<>wex) OR (wsy<>wey) THEN // Never place wires of zero lenght!
+         Items[SIZE(Items)+1]:={"W", 0, wsx, wsy, wex, wey, "", -1};
+      END;                         
+   END;
+END;
+
+// Text.
+LOCAL New_T(x, y, s)
+BEGIN
+   Add_undo();
+   x:=On_Grid(x); y:=On_Grid(y);
+   Items[SIZE(Items)+1]:={"T", 0, DIM(s)*5, 10, x, y, 0, 0, s, "", 1};
+END;
+
+// Junctions
+LOCAL New_J(x, y)
+BEGIN
+   Add_undo();
+   Items[SIZE(Items)+1]:={"J", 0, On_Grid(x), On_Grid(y), "", -1};
+END;
+
+LOCAL Update_Ref(RefIndex)
+BEGIN
+   LOCAL sufix:={"?","0","1","2","3","4","5","6","7","8","9"};
+   LOCAL refprefix1, refprefix2, refcnt:=0, tmpcnt;
+   LOCAL j, k;
+   
+   IF (RefIndex < 1) OR (RefIndex > SIZE(Items) ) THEN RETURN; END;
+   IF Items(RefIndex, 1) <> "T" THEN RETURN; END;
+   IF Items(RefIndex, 10) <> "Ref" THEN RETURN; END;
+	
+   refprefix1:=Items(RefIndex, 9);
+   // Extract the prefix by getting rid of the sufix
+   FOR k FROM 1 TO SIZE(sufix) STEP 1 DO
+      refprefix1:=REPLACE(refprefix1, sufix[k], "");
+   END;
+   
+   IF SIZE(refprefix1)==0 THEN RETURN; END;
+
+   FOR j FROM 1 TO SIZE(Items) STEP 1 DO
+      IF j <> RefIndex THEN
+         IF Items(j, 1) == "T" THEN
+            IF Items(j, 10) == "Ref" THEN
+			   refprefix2:=Items(j, 9);
+			   FOR k FROM 1 TO SIZE(sufix) STEP 1 DO
+			      refprefix2:=REPLACE(refprefix2, sufix[k], "");
+			   END;
+               IF refprefix2 == refprefix1 THEN
+                  IFERR tmpcnt:=EXPR(REPLACE(Items(j, 9), refprefix2, "")) THEN
+                     tmpcnt:=0;
+                  END;
+                  refcnt:=MAX(refcnt, tmpcnt);
+               END;
+            END;
+         END;
+      END;
+   END;
+   
+   IFERR Items(RefIndex, 9):=refprefix1+R2I(refcnt+1) THEN
+   END;
+END;
+
+LOCAL Do_New_Part(x, y)
+BEGIN
+   LOCAL status;
+   LOCAL rlc:=1, src:=1, cir:=1, sem:=1;
+ 
+   x:=On_Grid(x); y:=On_Grid(y); // Part origin must be in grid
+
+   IFERR status:=INPUT(
+     {{rlc, {"", "Resistor", "Resistor (small)", "Resistor (with I, V, and P)", "Inductor", "Capacitor", "Ideal Transformer", "Complex Impedance"}},
+     {src, {"", "Reference/GND", "DC Voltage Source", "DC Current Source", "Ideal OP Amp", "VCCS", "VCVS", "CCCS", "CCVS", "AC Voltage Source", "AC Current Source"}},
+     {cir, {"", "Net Name", "Voltage Indicator", "Current Indicator", "DC Options", "AC Options", "Expression Evaluation", "Short Circuit"}},
+     {sem, {"", "Diode", "LED", "Zener", "NPN BJT", "PNP BJT", "N-MOSFET", "P-MOSFET", "SIMPLE ACTIVE NPN BJT", "SIMPLE ACTIVE PNP BJT"}}},
+     "Select Part", {"R, L, C", "Sources", "Circuit", "Semiconductors"}) THEN RETURN END;
+     
+   CASE
+     // RLC   
+     IF rlc==2 THEN Add_undo(); New_R(x, y); RETURN; END;
+     IF rlc==3 THEN Add_undo(); New_R2(x, y); RETURN; END;
+     IF rlc==4 THEN Add_undo(); New_R3(x, y); RETURN; END;
+     IF rlc==5 THEN Add_undo(); New_L(x, y); RETURN; END;
+     IF rlc==6 THEN Add_undo(); New_C(x, y); RETURN; END;
+     IF rlc==7 THEN Add_undo(); New_IDTR(x, y); RETURN; END;
+     IF rlc==8 THEN Add_undo(); New_IMP(x, y); RETURN; END;
+     // Sources
+     IF src==2 THEN Add_undo(); New_GND(x, y); RETURN; END;
+     IF src==3 THEN Add_undo(); New_V(x, y); RETURN; END;
+     IF src==4 THEN Add_undo(); New_I(x, y); RETURN; END;
+     IF src==5 THEN Add_undo(); New_OpAmp(x, y); RETURN; END;
+     IF src==6 THEN Add_undo(); New_VCCS(x, y); RETURN; END;
+     IF src==7 THEN Add_undo(); New_VCVS(x, y); RETURN; END;
+     IF src==8 THEN Add_undo(); New_CCCS(x, y); RETURN; END;
+     IF src==9 THEN Add_undo(); New_CCVS(x, y); RETURN; END;
+     IF src==10 THEN Add_undo(); New_Vac(x, y); RETURN; END;
+     IF src==11 THEN Add_undo(); New_Iac(x, y); RETURN; END;
+     // Circuit
+     IF cir==2 THEN Add_undo(); New_NETN(x, y); RETURN; END;
+     IF cir==3 THEN Add_undo(); New_MetV(x, y); RETURN; END;
+     IF cir==4 THEN Add_undo(); New_MetA(x, y); RETURN; END;
+     IF cir==5 THEN Add_undo(); New_DCOPT(x, y); RETURN; END;
+     IF cir==6 THEN Add_undo(); New_ACOPT(x, y); RETURN; END;
+     IF cir==7 THEN Add_undo(); New_EVAL(x, y); RETURN; END;
+     IF cir==8 THEN Add_undo(); New_SC(x, y); RETURN; END;
+     // Semiconductors
+     IF sem==2 THEN Add_undo(); New_DIODE(x, y); RETURN; END;
+     IF sem==3 THEN Add_undo(); New_LED(x, y); RETURN; END;
+     IF sem==4 THEN Add_undo(); New_ZENER(x, y); RETURN; END;
+     IF sem==5 THEN Add_undo(); New_NPN(x, y); RETURN; END;
+     IF sem==6 THEN Add_undo(); New_PNP(x, y); RETURN; END;
+     IF sem==7 THEN Add_undo(); New_NMOS(x, y); RETURN; END;
+     IF sem==8 THEN Add_undo(); New_PMOS(x, y); RETURN; END;
+     IF sem==9 THEN Add_undo(); New_ANPN(x, y); RETURN; END;
+     IF sem==10 THEN Add_undo(); New_APNP(x, y); RETURN; END;
+   END;
+   
+END;
+
+LOCAL New_Part(x, y)
+BEGIN
+   LOCAL j, k, RefIndex:=0;
+
+   j:=SIZE(Items);
+   Do_New_Part(x, y);
+
+   IF SIZE(Items) > j THEN // If new part added then update reference designator
+      // First look for the reference designator of the part just added
+      FOR k FROM j+1 TO SIZE(Items) STEP 1 DO
+         IF Items(k, 1) == "T" THEN
+            IF Items(k, 10) == "Ref" THEN
+               RefIndex:=k;
+               BREAK;
+            END;
+         END;
+      END;
+      IFERR Update_Ref(RefIndex) THEN
+         My_PRINT("Update_Ref() failed", 1);
+      END;
+   END;
+
+   DEBOUNCE_MOUSE();
+END;
+
+LOCAL DRAW_CURSOR(X, Y, mcolor)
+BEGIN
+   IF ShiftON==0 THEN
+      FILLPOLY_P([(0+X,0+Y),(7+X,0+Y),(5+X,2+Y),(9+X,7+Y),(7+X,9+Y),(3+X,4+Y),(0+X,7+Y)], mcolor, 128)
+   ELSE
+      FILLPOLY_P([(0+X,0+Y),(7+X,0+Y),(5+X,2+Y),(9+X,7+Y),(7+X,9+Y),(3+X,4+Y),(0+X,7+Y)], mcolor, 200)
+   END;
+END;
+
+// http://www.hpmuseum.org/cgi-sys/cgiwrap/hpmuseum/archv021.cgi?read=253307
+LOCAL softmenu(x,y,n)
+BEGIN
+  LOCAL m:=-1, c;
+
+  IF y >= 220 THEN
+    CASE
+      IF   0 <= x <=  51 THEN m := 1; END;
+      IF  53 <= x <= 104 THEN m := 2; END;
+      IF 106 <= x <= 157 THEN m := 3; END;
+      IF 159 <= x <= 210 THEN m := 4; END;
+      IF 212 <= x <= 263 THEN m := 5; END;
+      IF 265 <= x <= 319 THEN m := 6; END;
+      DEFAULT m:=0; // if it's right in between menu options
+    END;
+    // check to see if valid menu option was selected
+    IF m > n THEN
+       m := 0;
+    ELSE
+       DEBOUNCE_MOUSE();
+    END;
+  END;
+  RETURN m;
+END;
+
+LOCAL Move_Items(x, y)
+BEGIN
+   LOCAL dx, dy, j, toreturn:=0;
+
+   dx:=On_Grid(x)-On_Grid(refx); dy:=On_Grid(y)-On_Grid(refy);
+
+   FOR j FROM 1 TO SIZE(Items) STEP 1 DO
+      IF Items(j,2)==1 THEN
+         CASE
+         IF Items(j,1) == "W" OR Items(j,1)=="P" THEN  // For wires and pins
+            IF toreturn=0 AND nmoves=0 THEN Add_undo(); END;
+            Items(j,3):=Items(j,3)+dx;
+            Items(j,4):=Items(j,4)+dy;
+            Items(j,5):=Items(j,5)+dx;
+            Items(j,6):=Items(j,6)+dy;
+            toreturn:=1;
+         END;      
+         IF Items(j,1) == "J" THEN // For junctions
+            IF toreturn=0 AND nmoves=0 THEN Add_undo(); END;
+            Items(j,3):=Items(j,3)+dx;
+            Items(j,4):=Items(j,4)+dy;
+            toreturn:=1;
+         END;    
+         DEFAULT // For texts and parts
+            IF toreturn=0 AND nmoves=0 THEN Add_undo(); END;
+            Items(j,5):=Items(j,5)+dx;
+            Items(j,6):=Items(j,6)+dy;
+            toreturn:=1;
+         END
+      END;
+   END;
+   refx:=x; refy:=y; // New reference point
+   nmoves:=nmoves+1;
+   return toreturn;
+END;
+
+LOCAL Delete_Items()
+BEGIN
+   LOCAL tmp:={}, j, k;
+
+   //Make sure all the part's children are selected/deselected so to match the state of the parent
+   FOR j FROM 1 TO SIZE(Items) STEP 1 DO
+      IF (Items(j,1)<>"W") AND (Items(j,1)<>"P") AND (Items(j,1)<>"J")  AND (Items(j,1)<>"T") THEN
+         FOR k FROM j TO SIZE(Items) STEP 1 DO
+            IF Items(k,1)=="T" AND (Items(k,8)+k)==j THEN
+               Items(k,2):=Items(j,2);
+            END;
+            IF Items(k,1)=="P" AND (Items(k,7)+k)==j THEN
+               Items(k,2):=Items(j,2); 
+            END;
+         END;
+      END;
+   END;
+  
+   k:=1;
+   FOR j FROM 1 TO SIZE(Items) STEP 1 DO
+     IF Items(j,2)<>1 THEN
+        tmp[k]:=Items[j];
+        k:=k+1;
+     END;
+   END;
+
+   IF k<>j THEN Add_undo(); END;
+
+   Items:=tmp;
+END;
+
+LOCAL R2I (num) // Print a number as an integer string
+BEGIN
+    LOCAL Digits:={"0","1","2","3","4","5","6","7","8","9"};
+    LOCAL Result:="";
+
+    IF num==0 THEN RETURN "0"; END;
+    WHILE num<>0 DO
+       Result:=Digits[(num MOD 10)+1]+Result;
+       num:=FLOOR(num/10);
+    END;
+
+    RETURN Result;
+END;
+
+// In retrospective, I should have documented this function better when I wrote it...
+LOCAL Part_Properties(part)
+BEGIN
+   LOCAL j, k:=1;
+   LOCAL labels:={}, values:={}, format:={};
+   LOCAL visible_lst:={"Hidden", "Value", "Label+Value"}, Label_Visible;
+   LOCAL title:="Part Properties";
+   LOCAL help:="";
+   LOCAL status;
+   LOCAL a, SomeText;
+   LOCAL inputstr, lin, inputed;
+
+   a:=Items(part,1);
+   IF (a=="P") OR (a=="J") OR (a=="W") OR (a==Default_Items(1,1)) THEN
+      RETURN;
+   END;
+   
+   IF (a=="T") THEN
+      SomeText:=Items(part,9);
+      Label_Visible:=Items(part,11)-1;
+      
+      IFERR inputed:=INPUT({{SomeText,[2]}, {Label_Visible,1}}, "Edit Text", {Items(part,10),"Label Visible"}, "Enter new text", {SomeText,Label_Visible}, {SomeText,Label_Visible}) THEN
+         RETURN;
+      END;
+      
+      IF inputed== 1 THEN
+         Add_undo();
+         Items(part,9):=SomeText;
+         Items(part,11):=Label_Visible+1;
+      END;
+      RETURN;
+   END;
+
+   inputstr:="status:=INPUT({";
+   lin:=0;
+   FOR j FROM 1 TO SIZE(Items) STEP 1 DO
+      IF Items(j,1)=="T" AND (Items(j,8)+j)==part THEN
+         labels[k]:=Items(j,10);
+         values[k]:=Items(j,9); 
+         k:=k+1;
+         labels[k]:=" ";
+         values[k]:=Items(j,11)+1; 
+         k:=k+1;
+         IF lin <> 0 THEN
+            inputstr:=inputstr+",";
+         END;
+         inputstr:=inputstr+"{values["+R2I(k-2)+"],[2],{20,45,"+R2I(lin)+"}}, {values["+R2I(k-1)+"],visible_lst,{70,30,"+R2I(lin)+"}}";
+         lin:=lin+1;
+      END;
+   END;
+   
+   labels[k]:="Pin names visible";
+   values[k]:=Items(part,8);
+   k:=k+1;
+   labels[k]:="Mirror";
+   values[k]:=Items(part,9);
+   
+   IF k>2 THEN
+      inputstr:=inputstr+",";
+   END;
+   
+   inputstr:=inputstr+"{values["+R2I(k-1)+"],1,{50,10,6}}, {values["+R2I(k)+"],1,{90,10,6}}";
+   inputstr:=inputstr+"}, title, labels, help, values, values);";
+
+   //My_PRINT(inputstr, 1); // Output should look like this:
+   //      status:=INPUT(
+   //       { {values[1],[2],{20,45,0}}, {values[2],1,{90,10,0}},
+   //         {values[3],[2],{20,45,1}}, {values[4],1,{90,10,1}},
+   //         {values[5],1,{50,10,6}}, {values[6],1,{90,10,6}} },
+   //         title, labels, help, values, values);
+ 
+   IFERR EXPR(inputstr) THEN RETURN; END;
+   
+   IF status==1 THEN
+      Add_undo();
+      k:=1;
+      FOR j FROM 1 TO SIZE(Items) STEP 1 DO
+         IF Items(j,1)=="T" AND (Items(j,8)+j)==part THEN
+            Items(j,9):=values[k]; 
+            k:=k+1;
+            Items(j,11):=values[k]-1; // Visibility
+            k:=k+1; 
+        END;
+      END;
+      Items(part,8):=values[k]; // Show pins
+      Items(part,9):=values[k+1]; // Mirror
+   END;
+
+   DEBOUNCE_MOUSE();
+
+END;
+
+LOCAL GetRefLabel(ref, label)
+BEGIN
+   LOCAL j, cur_ref;
+   FOR j FROM 1 TO SIZE(Items) STEP 1 DO
+      IF Items(j,1)=="T" AND Items(j,10)=="Ref" THEN cur_ref:=Items(j,9); END;
+      IF Items(j,1)=="T" AND Items(j,10)==label AND cur_ref==ref THEN
+         RETURN Items(j,9);
+      END;
+   END;
+END;
+
+LOCAL DoEval(j)
+BEGIN
+    LOCAL k, texti, texto, ref, label, val;
+    LOCAL mode, precision;
+  texti:=Items(j+2,9); // The text we have to parse
+  texto:="";
+  FOR k:=1 TO SIZE(texti) DO
+    IF CHAR(texti(k)) <> "#" THEN
+       texto:=texto+CHAR(texti(k));
+    ELSE
+       ref:=""; label:="";
+       k:=k+1;
+       WHILE CHAR(texti(k)) <> "," AND k<=SIZE(texti) DO
+          ref:=ref+CHAR(texti(k));
+          k:=k+1;
+       END;
+       k:=k+1;
+       WHILE CHAR(texti(k)) <> "#"  AND k<=SIZE(texti) DO
+          label:=label+CHAR(texti(k));
+          k:=k+1;
+       END;
+       k:=k+1;
+       texto:=texto+GetRefLabel(ref, label);
+    END;
+  END;
+  mode:=S2R(Items(j+3,9));
+  precision:=S2R(Items(j+4,9));
+  IFERR Items(j+5,9):=STRING(EXPR(texto), mode, precision) THEN Items(j+5,9):="ERROR"; END;
+END;
+
+LOCAL Draw_Items(sel)
+BEGIN
+   LOCAL j, k, text, r, scolor, dodraw;
+   LOCAL tmpp, tmpp2;
+   LOCAL bubbles:={}; // A list of potential points with bubbles from pins and wires
+
+   RECT_P(G5, 0, 0, 80-1, 60-1, white, white); // Used to map the bubbles
+
+   FOR j FROM 1 TO SIZE(Items) STEP 1 DO
+      k:=Items[j];
+      dodraw:=0;
+      IF sel==0            THEN dodraw:=1 END; // Draw all 
+      IF sel==1 AND k[2]=0 THEN dodraw:=1 END; // Draw unselected only
+      IF sel==2 AND k[2]=1 THEN dodraw:=1 END; // Draw selected only
+      scolor:=RGBsel;
+      
+      IF k[2]==0 THEN scolor:=RGBpart; END; // For parts
+      
+      CASE
+         // { "R", selected, sizex, sizey, posx, posy, orientation, pin names visible, mirror }
+         IF k[1]=="R"     AND dodraw==1 THEN     DRAW_R(k[5], k[6], k[7], k[9], scolor); END;
+         IF k[1]=="R2"    AND dodraw==1 THEN    DRAW_R2(k[5], k[6], k[7], k[9], scolor); END;
+         IF k[1]=="R3"    AND dodraw==1 THEN    DRAW_R3(k[5], k[6], k[7], k[9], scolor, j); END;
+         IF k[1]=="L"     AND dodraw==1 THEN     DRAW_L(k[5], k[6], k[7], k[9], scolor); END;
+         IF k[1]=="C"     AND dodraw==1 THEN     DRAW_C(k[5], k[6], k[7], k[9], scolor); END;
+         IF k[1]=="IMP"   AND dodraw==1 THEN   DRAW_IMP(k[5], k[6], k[7], k[9], scolor); END;
+         IF k[1]=="V"     AND dodraw==1 THEN     DRAW_V(k[5], k[6], k[7], k[9], scolor); END;
+         IF k[1]=="I"     AND dodraw==1 THEN     DRAW_I(k[5], k[6], k[7], k[9], scolor); END;
+         IF k[1]=="G"     AND dodraw==1 THEN   DRAW_GND(k[5], k[6], k[7], k[9], scolor); END;
+         IF k[1]=="N"     AND dodraw==1 THEN  DRAW_NETN(k[5], k[6], k[7], k[9], scolor); END;
+         IF k[1]=="MetA"  AND dodraw==1 THEN  DRAW_MetA(k[5], k[6], k[7], k[9], scolor); END;
+         IF k[1]=="MetV"  AND dodraw==1 THEN  DRAW_MetV(k[5], k[6], k[7], k[9], scolor); END;
+         IF k[1]=="D"     AND dodraw==1 THEN DRAW_DIODE(k[5], k[6], k[7], k[9], scolor); END;
+         IF k[1]=="Z"     AND dodraw==1 THEN DRAW_ZENER(k[5], k[6], k[7], k[9], scolor); END;
+         IF k[1]=="NPN"   AND dodraw==1 THEN   DRAW_NPN(k[5], k[6], k[7], k[9], scolor); END;
+         IF k[1]=="ANPN"  AND dodraw==1 THEN  DRAW_ANPN(k[5], k[6], k[7], k[9], scolor); END;
+         IF k[1]=="PNP"   AND dodraw==1 THEN   DRAW_PNP(k[5], k[6], k[7], k[9], scolor); END;
+         IF k[1]=="APNP"  AND dodraw==1 THEN  DRAW_APNP(k[5], k[6], k[7], k[9], scolor); END;
+         IF k[1]=="O"     AND dodraw==1 THEN DRAW_OpAmp(k[5], k[6], k[7], k[9], scolor); END;
+         IF k[1]=="NMOS"  AND dodraw==1 THEN  DRAW_NMOS(k[5], k[6], k[7], k[9], scolor); END;
+         IF k[1]=="PMOS"  AND dodraw==1 THEN  DRAW_PMOS(k[5], k[6], k[7], k[9], scolor); END;
+         IF k[1]=="DCOPT" AND dodraw==1 THEN DRAW_DCOPT(k[5], k[6], k[7], k[9], scolor); END;
+         IF k[1]=="ACOPT" AND dodraw==1 THEN DRAW_ACOPT(k[5], k[6], k[7], k[9], scolor); END;
+         IF k[1]=="LED"   AND dodraw==1 THEN   DRAW_LED(k[5], k[6], k[7], k[9], scolor); END;
+         IF k[1]=="VCCS"  AND dodraw==1 THEN  DRAW_VCCS(k[5], k[6], k[7], k[9], scolor); END;
+         IF k[1]=="VCVS"  AND dodraw==1 THEN  DRAW_VCVS(k[5], k[6], k[7], k[9], scolor); END;
+         IF k[1]=="CCCS"  AND dodraw==1 THEN  DRAW_CCCS(k[5], k[6], k[7], k[9], scolor); END;
+         IF k[1]=="CCVS"  AND dodraw==1 THEN  DRAW_CCVS(k[5], k[6], k[7], k[9], scolor); END;
+         IF k[1]=="IDTR"  AND dodraw==1 THEN  DRAW_IDTR(k[5], k[6], k[7], k[9], scolor); END;
+         IF k[1]=="VAC"   AND dodraw==1 THEN   DRAW_Vac(k[5], k[6], k[7], k[9], scolor); END;
+         IF k[1]=="IAC"   AND dodraw==1 THEN   DRAW_Iac(k[5], k[6], k[7], k[9], scolor); END;
+         IF k[1]=="SC"    AND dodraw==1 THEN    DRAW_SC(k[5], k[6], k[7], k[9], scolor); END;
+         IF k[1]=="EVAL"  AND dodraw==1 THEN
+            DRAW_EVAL(k[5], k[6], k[7], k[9], scolor);
+            DoEval(j);
+         END;
+
+         IF k[1]=="T" THEN
+            IF k[2]==0 THEN scolor:=RGBtext; END;
+            IF k[11]>0 THEN // Draw only if text is visible 
+               IF dodraw==1 THEN
+                  IF k[11]==1 THEN // Display just the text
+                     r:=TEXTOUT_P(k[9], G1, k[5], k[6], 0, scolor);
+                  ELSE // Display label and text
+                     r:=TEXTOUT_P(k[10]+"="+k[9], G1, k[5], k[6], 0, scolor);
+                  END;
+                  Items(j,3):=r-k[5]; // Since we are here, adjust the text box dimensions...
+                  Items(j,4):=12;
+               END;
+            END;
+         END;
+         IF k[1]=="P" THEN
+            IF k[2]==0 THEN scolor:=RGBpin; END;
+            IF Items(j+k[7],8)==1 THEN  // Check if the parent part wants the pin names visible
+               text:=k[8];
+            ELSE
+               text:="";
+            END;
+            IF dodraw==1 THEN
+               tmpp:=DRAW_LINE( k[3], k[4], k[5], k[6], Items(j+k[7],7), Items(j+k[7],9), Items(j+k[7],5), Items(j+k[7],6), scolor, text);
+               bubbles[SIZE(bubbles)+1]:={tmpp[1]/10, tmpp[2]/10}; // DRAW_LINE returns the rotated points
+            END;
+         END;
+         IF k[1]=="W" THEN
+            IF k[2]==0 THEN scolor:=RGBwire; END;
+            IF dodraw==1 THEN
+               LINE_P(G1, k[3], k[4], k[5], k[6], scolor);
+               bubbles[SIZE(bubbles)+1]:={k[3]/10,k[4]/10};
+               bubbles[SIZE(bubbles)+1]:={k[5]/10,k[6]/10};
+            END;
+         END;
+         IF k[1]=="J" THEN
+            IF k[2]==0 THEN scolor:=RGBjunc; END;
+            IF dodraw==1 THEN FOR r FROM 1 TO 3 STEP 1 DO ARC_P(G1, k[3], k[4], r, scolor); END; END;
+         END;
+      END;
+   END;
+ 
+   // Draw the bubbles if needed
+   FOR j FROM 1 TO SIZE(bubbles) STEP 1 DO
+      IF GETPIX_P(G5, bubbles(j,1), bubbles(j,2))==white THEN
+          PIXON_P(G5, bubbles(j,1), bubbles(j,2), red);
+      ELSE
+          PIXON_P(G5, bubbles(j,1), bubbles(j,2), blue);
+      END;
+   END;
+
+   IF sel==2 THEN scolor:=RGBsel; ELSE scolor:=RGBbub; END;
+   FOR j FROM 1 TO SIZE(bubbles) STEP 1 DO
+      IF GETPIX_P(G5, bubbles(j,1), bubbles(j,2))==red THEN
+         ARC_P(G1, bubbles(j,1)*10, bubbles(j,2)*10, 3, scolor);
+      END;
+   END;
+
+END;
+
+LOCAL My_MSGBOX0(str)
+BEGIN
+   LOCAL txtsize;
+    
+   txtsize:=TEXTOUT_P(str,G0,0,240,3,RGBtext); // Measure the text first
+   RECT_P(160-(txtsize/2)-10,95,160+(txtsize/2)+10,125,RGBtext,RGBback);
+   TEXTOUT_P(str,G0,160-txtsize/2,103,3,RGBtext);
+END;
+
+LOCAL Do_My_MSGBOX(str)
+BEGIN
+   LOCAL txtsize, c;
+    
+   txtsize:=TEXTOUT_P(str,G0,0,240,3,RGBtext); // Measure the text first
+   RECT_P(160-(txtsize/2)-10,95,160+(txtsize/2)+10,125,RGBtext,RGBback);
+   TEXTOUT_P(str,G0,160-txtsize/2,103,3,RGBtext);
+   DRAWMENU("CANCEL","","","","","OK");
+  
+   DEBOUNCE_MOUSE();      
+   
+   WHILE 1 DO
+      c:=MOUSE();
+      c:=c[1];
+        
+      IF SIZE(c)==0 THEN
+         c:=GETKEY();
+           
+         IF c==4 THEN // Cancel
+            RETURN 0;
+         END;
+  
+         IF c==30 THEN // Ok
+            RETURN 1;
+         END;
+           
+      ELSE // Mouse input
+         IF softmenu(c[1],c[2],6)==1 THEN
+            RETURN 0;  // Cancel
+         END;
+         IF softmenu(c[1],c[2],6)==6 THEN
+            RETURN 1;  // Ok
+         END;
+      END;
+   END;
+END;
+
+LOCAL My_MSGBOX(str)
+BEGIN
+   LOCAL toret;
+   IFERR toret:=Do_My_MSGBOX(str) THEN
+      RETURN 0; // Interrupted...
+   END;
+   RETURN toret;
+END;
+
+//https://stackoverflow.com/questions/849211/shortest-distance-between-a-point-and-a-line-segment
+LOCAL Point_Distance_to_Segment(x, y, x1, y1, x2, y2)
+BEGIN
+   LOCAL A, B, C, D, dot, len_sq;
+   LOCAL param, xx, yy, dx, dy;
+
+   IF y1==y2 THEN
+      IF (MIN(x1,x2)-5) <= x <= (MAX(x1,x2)+5) THEN
+         RETURN ABS(y1-y);
+      ELSE
+         RETURN 100000;
+      END;
+   END;
+
+   IF x1==x2 THEN
+      IF (MIN(y1,y2)-5) <= y <= (MAX(y1,y2)+5) THEN
+         RETURN ABS(x1-x);
+      ELSE
+         RETURN 100000;
+      END;
+   END;
+   
+   IF x1==x2 THEN
+   END;
+
+   A := x - x1;
+   B := y - y1;
+   C := x2 - x1;
+   D := y2 - y1;
+
+   dot := A * C + B * D;
+   len_sq := C * C + D * D;
+   param := -1;
+
+   IF (len_sq <> 0) THEN //in case of 0 length line
+      param := dot / len_sq;
+   END;
+
+   IF (param < 0) THEN
+      xx = x1; yy = y1;
+   ELSE
+      IF (param > 1) THEN
+         xx := x2; yy := y2;
+      ELSE
+         xx := x1 + param * C;
+         yy := y1 + param * D;
+      END;
+   END;
+
+   dx := x - xx;
+   dy := y - yy;
+   return sqrt(dx * dx + dy * dy);
+END;
+
+LOCAL Deselect_all()
+BEGIN
+   LOCAL j;
+   FOR j FROM 1 TO SIZE(Items) STEP 1 DO 
+      Items(j,2):=0; // Deselect
+   END;
+END;
+
+LOCAL Select_Child_Items(part)
+BEGIN
+   LOCAL j;
+   Items(part,2):=1; // Select
+   FOR j FROM 1 TO SIZE(Items) STEP 1 DO
+      IF Items(j,1)=="T" AND (Items(j,8)+j)==part THEN
+         Items(j,2):=1;
+      END;
+      IF Items(j,1)=="P" AND (Items(j,7)+j)==part THEN
+         Items(j,2):=1; 
+      END;
+   END;
+END;
+
+LOCAL DeSelect_Child_Items(part)
+BEGIN
+   LOCAL j;
+   Items(part,2):=0; // DeSelect
+   FOR j FROM 1 TO SIZE(Items) STEP 1 DO
+      IF Items(j,1)=="T" AND (Items(j,8)+j)==part THEN
+         Items(j,2):=0;
+      END;
+      IF Items(j,1)=="P" AND (Items(j,7)+j)==part THEN
+         Items(j,2):=0; 
+      END;
+   END;
+END;
+
+// Check if the cursor is near/on a part, wire, text, or junction.  This function
+// causes sluggishnes for large circuits.
+LOCAL On_Element(x,y)
+BEGIN
+   LOCAL j,k,toret:=-1;
+ 
+   refx:=x; refy:=y;
+
+   IF (ShiftON==0) THEN
+      Deselect_all();
+   END;
+
+   FOR j FROM SIZE(Items) DOWNTO 1 STEP 1 DO // Go backwards so part's texts are selected first.
+     k:=Items[j]; // Use k for speed, but to assign we need to use Items(j,#)
+      
+     CASE
+        IF (k[1]=="T") THEN
+           IF (k[7]==0 OR k[7]==180) THEN
+              if  ( (k[5]-3) <= x <= (k[5]+k[3]+3) ) AND ( (k[6]-3) <= y <= (k[6]+k[4]+3) ) AND (k[11] > 0) THEN // Only visible texts
+                 IF k[2]==0 THEN
+                    Items(j,2):=1;
+                 ELSE
+                    Items(j,2):=0;
+                 END;
+                 toret:= j;
+                 IF (ShiftON==0) THEN nmoves:=0; RETURN toret; END;
+              END;
+           ELSE //Why? Text rotation is not implemented...
+              if  ( k[5] <= x <= (k[5]+k[4]) ) AND ( k[6] <= y <= (k[6]+k[3]) ) THEN
+                 IF k[2]==0 THEN
+                    Items(j,2):=1;
+                 ELSE
+                    Items(j,2):=0;
+                 END;
+                 toret:=j;
+                 IF (ShiftON==0) THEN nmoves:=0; RETURN toret; END;
+              END;
+           END;
+        END;
+
+        IF (k[1]=="W") THEN
+           IF Point_Distance_to_Segment(x, y, k[3], k[4], k[5], k[6])<=5 THEN
+              IF k[2]==0 THEN
+                 Items(j,2):=1;
+              ELSE
+                 Items(j,2):=0;
+              END;
+              toret:=j;
+              IF (ShiftON==0) THEN nmoves:=0; RETURN toret; END;
+           END;      
+        END;
+
+        IF (k[1]=="J") THEN
+           if  ( (k[3]-5) <= x <= (k[3]+5) ) AND ( (k[4]-5) <= y <= (k[4]+5) ) THEN
+              IF k[2]==0 THEN
+                 Items(j,2):=1;
+              ELSE
+                 Items(j,2):=0;
+              END;
+              toret:=j;
+              IF (ShiftON==0) THEN nmoves:=0; RETURN toret; END;
+           END;
+        END;
+
+        IF (k[1]=="Dummy") OR (k[1]==Default_Items(1,1)) OR (k[1]=="P") THEN
+        END;
+
+        DEFAULT // For parts
+           IF (k[7]==0 OR k[7]==180) THEN
+              if  ( (k[5]-5-k[3]/2) <= x <= (k[5]+5+k[3]/2) ) AND ( (k[6]-5-k[4]/2) <= y <= (k[6]+5+k[4]/2) ) THEN
+                 IF k[2]==0 THEN
+                    Select_Child_Items(j);
+                 ELSE
+                    DeSelect_Child_Items(j);
+                 END;
+                 toret:=j;
+                 IF (ShiftON==0) THEN nmoves:=0; RETURN toret; END;
+              END;
+           ELSE
+              if  ( (k[5]-5-k[4]/2) <= x <= (k[5]+5+k[4]/2) ) AND ( (k[6]-5-k[3]/2) <= y <= (k[6]+6+k[3]/2) ) THEN
+                 IF k[2]==0 THEN
+                    Select_Child_Items(j);
+                 ELSE
+                    DeSelect_Child_Items(j);
+                 END;
+                 toret:=j;
+                 IF (ShiftON==0) THEN nmoves:=0; RETURN toret; END;
+              END;
+           END;
+        END;
+     END;
+     
+     nmoves:=0;
+     RETURN toret;
+END;
+
+// Select all the Items in the provided box
+LOCAL Select_Items(sx, sy, ex, ey)
+BEGIN
+   LOCAL j,k,toret:=-1;
+   LOCAL maxx, minx, maxy, miny;
+
+   maxx:=MAX(sx,ex);
+   minx:=MIN(sx,ex);
+   maxy:=MAX(sy,ey);
+   miny:=MIN(sy,ey);
+
+   IF (ShiftON==0) THEN
+      Deselect_all();
+   END;
+
+   FOR j FROM 1 TO SIZE(Items) STEP 1 DO
+      k:=Items[j];
+      CASE
+        IF (k[1]=="T") THEN
+           IF (k[7]==0 OR k[7]==180) THEN
+              CASE
+                 if (minx <= k[5] <= maxx ) AND (miny <= k[6] <= maxy ) THEN Items(j,2):=1; toret:=j; END;
+                 if (minx <= (k[5]+k[3]) <= maxx ) AND (miny <= k[6] <= maxy ) THEN Items(j,2):=1; toret:=j; END;
+                 if (minx <= (k[5]+k[3]) <= maxx ) AND (miny <= (k[6]+k[4]) <= maxy ) THEN Items(j,2):=1; toret:=j; END;
+                 if (minx <= k[5] <= maxx ) AND (miny <= (k[6]+k[4]) <= maxy ) THEN Items(j,2):=1; toret:=j; END;
+              END
+           ELSE
+              CASE
+                 if (miny <= k[5] <= maxy ) AND (minx <= k[6] <= maxx ) THEN Items(j,2):=1; toret:=j; END;
+                 if (miny <= (k[5]+k[3]) <= maxy ) AND (minx <= k[6] <= maxx ) THEN Items(j,2):=1; toret:=j; END;
+                 if (miny <= (k[5]+k[3]) <= maxy ) AND (minx <= (k[6]+k[4]) <= maxx ) THEN Items(j,2):=1; toret:=j; END;
+                 if (miny <= k[5] <= maxy ) AND (minx <= (k[6]+k[4]) <= maxx ) THEN Items(j,2):=1; toret:=j; END;
+              END
+           END;
+        END;
+
+        IF (k[1]=="W") THEN
+           if  (minx <= k[3] <= maxx ) AND (miny <= k[4] <= maxy ) THEN Items(j,2):=1; toret:=j; END;
+           if  (minx <= k[5] <= maxx ) AND (miny <= k[6] <= maxy ) THEN Items(j,2):=1; toret:=j; END;
+        END;
+
+        IF (k[1]=="J") THEN
+           if  (minx <= k[3] <= maxx ) AND (miny <= k[4] <= maxy ) THEN Items(j,2):=1; toret:=j; END;
+        END;
+
+        IF (k[1]=="Dummy") OR (k[1]==Default_Items(1,1)) OR (k[1]=="P") THEN
+        END;
+
+        DEFAULT // For parts         
+           IF (k[7]==0 OR k[7]==180) THEN
+              CASE
+                 if (minx <= (k[5]-k[3]/2) <= maxx ) AND (miny <= (k[6]-k[4]/2) <= maxy ) THEN Items(j,2):=1; Select_Child_Items(j); toret:=j; END;
+                 if (minx <= (k[5]+k[3]/2) <= maxx ) AND (miny <= (k[6]-k[4]/2) <= maxy ) THEN Items(j,2):=1; Select_Child_Items(j); toret:=j; END;
+                 if (minx <= (k[5]+k[3]/2) <= maxx ) AND (miny <= (k[6]+k[4]/2) <= maxy ) THEN Items(j,2):=1; Select_Child_Items(j); toret:=j; END;
+                 if (minx <= (k[5]-k[3]/2) <= maxx ) AND (miny <= (k[6]+k[4]/2) <= maxy ) THEN Items(j,2):=1; Select_Child_Items(j); toret:=j; END;
+              END
+           ELSE
+              CASE
+                 if (miny <= (k[6]-k[3]/2) <= maxy ) AND (minx <= (k[5]-k[4]/2) <= maxx ) THEN Items(j,2):=1; Select_Child_Items(j); toret:=j; END;
+                 if (miny <= (k[6]+k[3]/2) <= maxy ) AND (minx <= (k[5]-k[4]/2) <= maxx ) THEN Items(j,2):=1; Select_Child_Items(j); toret:=j; END;
+                 if (miny <= (k[6]+k[3]/2) <= maxy ) AND (minx <= (k[5]+k[4]/2) <= maxx ) THEN Items(j,2):=1; Select_Child_Items(j); toret:=j; END;
+                 if (miny <= (k[6]-k[3]/2) <= maxy ) AND (minx <= (k[5]+k[4]/2) <= maxx ) THEN Items(j,2):=1; Select_Child_Items(j); toret:=j; END;
+              END
+           END;
+      END;   
+   END;
+   IF toret>0 THEN nmoves:=0; END;
+   RETURN toret;
+END;
+
+LOCAL New_Circuit()
+BEGIN
+   IF My_MSGBOX("Discard changes and start over?") <> 0 THEN
+      Add_undo();
+      CircuitName:="";
+      Items:=Default_Items;
+      BLIT_P(G1, G3); Draw_Items(0);
+   END;
+END;
+
+LOCAL Open_Circuit()
+BEGIN
+   LOCAL j:=0, lst0, lst:={}, tItems:={}, OpenError:=0, choosen;
+   lst0:=CONCAT("New",SORT(AFiles));
+
+   FOR j FROM 1 TO SIZE(lst0) STEP 1 DO
+      IF INSTRING(lst0(j), ".png") == 0 THEN
+      	 lst(SIZE(lst)+1):=lst0(j);
+      END;
+   END;
+   
+   IFERR choosen:=CHOOSE(j, "Select a circuit", lst) THEN RETURN; END;
+      
+   IF choosen THEN
+      Add_undo();
+      IF j>1 THEN
+         tItems:=AFiles(lst(j));
+         IFERR tItems(1,1) THEN
+            OpenError:=1;
+         ELSE
+            IF tItems(1,1)<>Default_Items(1,1) THEN
+               OpenError:=1;
+            ELSE
+               Items:=tItems;
+               CircuitName:=lst(j);
+               Rest_Pos();
+            END;
+         END;
+      ELSE // New selected
+         Items:=Default_Items;
+         CircuitName:="";
+      END;
+   ELSE // Escape key pressed
+      // Nothing to do...
+   END;
+   
+   IF OpenError==1 THEN
+      My_MSGBOX("Error: '" + lst(j) + "' is not a circuit.");
+   END;
+   
+   Draw_Items(0);
+   DEBOUNCE_MOUSE();
+   lst:={};
+   tItems:={}
+END;
+
+// Capture_Screen() freezes if there is not enough memory.  That happens if the
+// actual calculator (at least revisions A and C) is connected to the connectivity
+// kit.  Disconecting and pressing the reset button seem to free enough memory for
+// this function to work.  The virtual calculator always works.
+LOCAL Capture_Screen()
+BEGIN
+   IF CircuitName<>"" THEN
+      AFiles(CircuitName + ".png"):=G1;
+      My_MSGBOX(CircuitName + ".png saved.");
+   ELSE
+      My_MSGBOX("Save the circuit first.");
+   END;
+END;
+
+LOCAL Copy_Selected_Items(x, y)
+BEGIN
+   LOCAL tmp:={}, j, k;
+
+   // Make sure all the part's children are selected/deselected according to its parent
+   FOR j FROM 1 TO SIZE(Items) STEP 1 DO
+      IF (Items(j,1)<>"W") AND (Items(j,1)<>"P") AND (Items(j,1)<>"J")  AND (Items(j,1)<>"T") THEN
+         FOR k FROM j TO SIZE(Items) STEP 1 DO
+            IF Items(k,1)=="T" AND (Items(k,8)+k)==j THEN
+               Items(k,2):=Items(j,2);
+            END;
+            IF Items(k,1)=="P" AND (Items(k,7)+k)==j THEN
+               Items(k,2):=Items(j,2); 
+            END;
+         END;
+      END;
+   END;
+   
+   k:=1;
+   FOR j FROM 1 TO SIZE(Items) STEP 1 DO
+     IF Items(j,2)==1 THEN
+        tmp[k]:=Items[j];
+        k:=k+1;
+     END;
+   END;
+
+   Copied:=tmp;
+   CopiedX:=x; CopiedY:=y;
+END;
+
+LOCAL Paste_Selected_Items(x, y)
+BEGIN
+   LOCAL tmp:={}, dx, dy, j, toreturn:=0;
+
+   dx:=On_Grid(x-CopiedX); dy:=On_Grid(y-CopiedY); // The displacement of the pasted Items (snap to grid)
+   
+   tmp:=Copied; // Since we need to modify the Items location, use a temporary copy
+   FOR j FROM 1 TO SIZE(tmp) STEP 1 DO
+      tmp(j,2):=1; // Paste as selected so we can move the new Items if needed
+      IF toreturn==0 THEN Add_undo(); toreturn:=1; END;
+      CASE
+         IF tmp(j,1)=="P" OR tmp(j,1)=="W" THEN
+            tmp(j,3):=tmp(j,3)+dx;
+            tmp(j,4):=tmp(j,4)+dy;
+            tmp(j,5):=tmp(j,5)+dx;
+            tmp(j,6):=tmp(j,6)+dy;
+         END;
+         IF tmp(j,1)=="J" THEN
+            tmp(j,3):=tmp(j,3)+dx;
+            tmp(j,4):=tmp(j,4)+dy;
+         END;
+         DEFAULT // Parts and texts
+            tmp(j,5):=tmp(j,5)+dx;
+            tmp(j,6):=tmp(j,6)+dy;
+      END;
+      Items[SIZE(Items)+1]:=tmp[j];
+      // Update the reference of pasted parts...
+      IF tmp(j,1)=="T" THEN
+         IF tmp(j,10)=="Ref" THEN
+            IFERR Update_Ref(SIZE(Items)) THEN
+               My_PRINT("Problem updating Ref for pasted " + tmp(j,9), 1);
+            END;
+         END;
+      END;
+   END;
+END;
+
+LOCAL Edit_Select(x, y, d)
+BEGIN
+   LOCAL d_prev;
+   IF newsel=0 THEN
+      newsel:=1;
+      ssx:=On_Grid(x);
+      ssy:=On_Grid(y);
+   ELSE
+      newsel:=0;
+      sex:=On_Grid(x);
+      sey:=On_Grid(y);
+      d_prev:=d;
+      d:=Select_Items(ssx, ssy, sex, sey);
+      refx:=ssx;
+      refy:=ssy;
+      IF d>=0 OR d_prev>=0 THEN
+          BLIT_P(G1, G3); Draw_Items(1);
+          BLIT_P(G4, G1); Draw_Items(2);
+      END;
+   END;
+   RETURN d;
+END;
+
+LOCAL Get_Pin_xy (j)
+BEGIN
+   LOCAL tmpp, k;
+
+   k:=Items[j];
+   IF k[1]<>"P" THEN
+      My_PRINT("Not a pin", 1);
+   END;
+   tmpp:=Rotate_Point( k[3], k[4], Items(j+k[7],7), Items(j+k[7],9), Items(j+k[7],5), Items(j+k[7],6));
+   RETURN tmpp;
+END;
+
+LOCAL Term_line:=0;
+
+LOCAL Do_My_Term()
+BEGIN
+   LOCAL redraw:=1, y, ly, x, lx, c;
+
+   DEBOUNCE_MOUSE();      
+   
+   WHILE 1 DO
+      IF redraw==1 THEN
+         redraw:=0;
+         BLIT_P(G2,0,0,320,220,G6,x,y,x+320,y+220);
+         BLIT_P(G0,0,0,320,220,G2,0,0,320,220);
+         DRAWMENU("","","","","","BACK");
+      END;
+      
+      c:=MOUSE();
+      c:=c[1];
+      
+      IF SIZE(c)==0 THEN
+         c:=GETKEY();
+         
+         IF c==4 THEN // Escape quits the terminal
+            RETURN;
+         END;
+
+         // The arrow keys
+         IF c==2 THEN  // UP
+            ly:=ly-15;
+            IF ly<0 THEN
+               ly:=0;
+            END;
+            redraw:=1;
+         END;
+         IF c==12 THEN // DOWN
+            ly:=MIN(ly+15,999);
+            redraw:=1;
+         END; 
+
+         IF c==7 THEN  // LEFT
+            lx:=lx-5;
+            IF lx<0 THEN
+               lx:=0;
+            END;
+            redraw:=1;
+         END;
+         IF c==8 THEN // RIGHT
+            lx:=MIN(lx+5,479);
+            redraw:=1;
+         END; 
+         
+         
+      ELSE // Mouse input
+         redraw:=1;
+         IF c[5]==0 THEN // New
+            lx:=c[1];
+            ly:=c[2];
+         END;
+
+         IF c[5]==2 THEN // Drag
+            x:=MAX(0,MIN(480-320,x-c[1]+lx));
+            y:=MAX(0,MIN(MIN(1000-220,Term_line*15),y-c[2]+ly));
+            lx:=c[1];
+            ly:=c[2];
+         END;
+
+         IF softmenu(c[1],c[2],6)==6 THEN
+            RETURN;
+         END;
+      END;
+   END;
+END;
+
+LOCAL My_Term()
+BEGIN
+   IFERR Do_My_Term() THEN
+   END;
+END;
+
+LOCAL Clear_Term()
+BEGIN
+   RECT_P(G6, 0, 0, 479-1, 999-1, RGBback, RGBback);
+   Term_line:=0;
+END;
+
+LOCAL My_PRINT(str, show)
+BEGIN
+   LOCAL j, n, strb:=1, tmpstr;
+   LOCAL cpl:=80; // chars per line
+   IF str=="" THEN
+      Term_line:=Term_line+1;
+   ELSE
+      IF (Term_line*15)<(999-15) THEN
+         n:=FLOOR(DIM(str)/cpl);
+         IF n==0 THEN
+            TEXTOUT_P(str, G6, 0, Term_line*15);
+            Term_line:=Term_line+1;
+         ELSE
+            FOR j FROM 1 TO n STEP 1 DO
+               TEXTOUT_P(MID(str,strb,cpl), G6, 0, Term_line*15);
+               Term_line:=Term_line+1;
+               strb:=strb+cpl;
+            END;
+            IF (DIM(str) MOD cpl) <> 0 THEN
+               TEXTOUT_P(MID(str,strb), G6, 0, Term_line*15);
+               Term_line:=Term_line+1;
+            END;
+         END;
+      END;
+   END;
+   IF show==1 THEN
+      BLIT_P(G0,0,0,320,220,G6,0,0,320,220);
+   END;
+END;
+
+LOCAL S2R (str) // String to Real
+BEGIN
+   LOCAL val;
+   IFERR val:=EXPR(str) THEN
+      My_PRINT("Warning: Problem converting expression '" + str + "' into a real number.", 1);
+      RETURN 0;
+   END;
+   IF IM(val)<>0 THEN
+      My_PRINT("Warning: Evaluation of '" + str  + "' is not a real number.", 1);
+      val:=RE(val); // Return the real part only
+   END;
+   RETURN val;
+END;
+
+LOCAL S2C (str) // String to Complex
+BEGIN
+   LOCAL val;
+   IFERR val:=EXPR(str) THEN
+      My_PRINT("Warning: Problem converting expression '" + str + "' into a complex number.", 1);
+      RETURN 0;
+   END;
+   RETURN val;
+END;
+
+// This is a most critical function.  Since it is called repeatedly, any improvements
+// will be reflected in the speed of the creation of the netlist.
+LOCAL Link_Wire (j)
+BEGIN
+   LOCAL i, toreturn:=0;
+   LOCAL x1, y1, x2, y2, node_number;
+   
+   x1:=WireLst(j,2);
+   y1:=WireLst(j,3);
+   x2:=WireLst(j,4);
+   y2:=WireLst(j,5);
+   node_number:=WireLst(j,6);
+   
+   unlink_wires:=0; // Global
+   FOR i FROM 1 TO SIZE(WireLst) STEP 1 DO     
+      IF WireLst(i,6)<0 THEN
+         CASE 
+            IF (WireLst(i,2)==x1 AND WireLst(i,3)==y1) THEN WireLst(i,6):=node_number; toreturn:=i; END;
+            IF (WireLst(i,2)==x2 AND WireLst(i,3)==y2) THEN WireLst(i,6):=node_number; toreturn:=i; END;
+            IF (WireLst(i,4)==x1 AND WireLst(i,5)==y1) THEN WireLst(i,6):=node_number; toreturn:=i; END;
+            IF (WireLst(i,4)==x2 AND WireLst(i,5)==y2) THEN WireLst(i,6):=node_number; toreturn:=i; END;
+            DEFAULT unlink_wires:=unlink_wires+1; // unlink_wires:=1; may be faster
+         END;
+      END;
+   END;
+   RETURN toreturn;
+END;
+
+LOCAL Create_Netlist()
+BEGIN
+   LOCAL i, j, k, m, pj, pk, Node_count:=1;
+   LOCAL PinLst:={}, JuncLst:={};
+   LOCAL x1, y1, x2, y2;
+   LOCAL Ticks1;
+   LOCAL node_high, node_low;
+
+   Clear_Term();
+   My_PRINT("Creating Netlist...", 1);
+   Ticks1:=TICKS();
+   WireLst:={};
+    
+   // Un-assign all wires, pins, and junctions.
+   FOR j FROM 1 TO SIZE(Items) STEP 1 DO
+      CASE
+         IF Items(j,1)=="P" THEN Items(j,10):=-1; END;
+         IF Items(j,1)=="W" THEN Items(j,8):=-1;  END;
+         IF Items(j,1)=="J" THEN Items(j,6):=-1;  END;
+      END;
+   END;
+   
+   // Use 'G' and 'N' parts to name their pins.
+   i:=0;
+   FOR j FROM 1 TO SIZE(Items) STEP 1 DO
+      IF Items(j,1)=="G" THEN // Ground symbols/labels
+         Items(j+1,9):="GND";
+         Items(j+1,10):=0; // Reference is always node 0
+         i:=1;
+      END;
+      IF Items(j,1)=="N" THEN // Net name labels
+         IF Items(j+2,9)<>"N?" AND Items(j+2,9)<>"" THEN
+            IF Items(j+1,10) == -1 THEN // Only for those with a pin without a node number
+               Items(j+1,9):=Items(j+2,9);
+               Items(j+1,10):=Node_count;
+               Node_count:=Node_count+1;
+               // Two labels can have the same name, so their pins must also have the same node number.
+               FOR k FROM j+1 to SIZE(Items) STEP 1 DO
+                  IF Items(k,1)=="N" THEN
+                     IF Items(k+2,9) == Items(j+2,9) THEN
+                        Items(k+1,9):=Items(j+1,9);
+                        Items(k+1,10):=Items(j+1,10);
+                     END;
+                  END;
+               END;
+            END;
+         END;
+      END;
+   END;
+      
+   IF i==0 THEN
+      My_PRINT("ERROR: Reference/GND node not present.", 1);
+      My_Term();      
+      RETURN;
+   END;
+
+   // Create the working lists used to assign node names
+   FOR k FROM 1 TO SIZE(Items) STEP 1 DO
+      m:=Items(k);
+      CASE
+         IF m(1)=="P" THEN
+            pk:=Get_Pin_xy(k);
+            PinLst(SIZE(PinLst)+1):={k, pk[1], pk[2], m(10)}; 
+         END;
+         IF m(1)=="W" THEN
+            WireLst(SIZE(WireLst)+1):={k, m(3), m(4), m(5), m(6), m(8)}; 
+         END;
+         IF m(1)=="J" THEN  
+            JuncLst(SIZE(JuncLst)+1):={k, m(3), m(4), m(6)}; 
+         END;
+      END;         
+   END;
+  
+   // Dealing with junctions is difficult.  So for each junction, split the wire it touches into two pieces
+   FOR k FROM 1 TO SIZE(JuncLst) STEP 1 DO
+      FOR j FROM 1 TO SIZE(WireLst) STEP 1 DO
+         // Check that the junction is touching the wire
+         IF Point_Distance_to_Segment(JuncLst(k,2), JuncLst(k,3), WireLst(j,2), WireLst(j,3), WireLst(j,4), WireLst(j,5)) < 1 THEN
+             // But not the ends of the wire
+            IF (JuncLst(k,2)<>WireLst(j,2) OR JuncLst(k,3)<>WireLst(j,3)) AND (JuncLst(k,2)<>WireLst(j,4) OR JuncLst(k,3)<>WireLst(j,5)) THEN
+               // Split the current wire into two using the junction as the cut point:
+               i:=SIZE(WireLst)+1;
+               WireLst(i):=WireLst(j);
+               // Use the original wire for one segment...
+               WireLst(j,2):=JuncLst(k,2);
+               WireLst(j,3):=JuncLst(k,3);
+               // ...and the new wire for the other segment
+               WireLst(i,4):=JuncLst(k,2);
+               WireLst(i,5):=JuncLst(k,3);
+             END;
+         END;
+      END;
+   END;
+  
+   // Look for all the pins with a node number.  If the pin has a number, assign it to ALL the wires and pins it touches
+   FOR k FROM 1 TO SIZE(PinLst) STEP 1 DO
+      IF PinLst(k,4)>=0 THEN
+         FOR j FROM 1 TO SIZE(WireLst) STEP 1 DO
+            IF (PinLst(k,2)==WireLst(j,2) AND PinLst(k,3)==WireLst(j,3)) OR (PinLst(k,2)==WireLst(j,4) AND PinLst(k,3)==WireLst(j,5)) THEN
+               WireLst(j,6):=PinLst(k,4);
+               i:=j; WHILE i<>0 DO i:=Link_Wire(i); END;
+            END;
+         END;
+         FOR j FROM 1 TO SIZE(PinLst) STEP 1 DO
+            IF (PinLst(k,2)==PinLst(j,2) AND PinLst(k,3)==PinLst(j,3)) THEN
+               PinLst(j,4):=PinLst(k,4);
+            END;
+         END;
+      END;
+   END;
+
+   // 'unlink_wires' is a global variable updated by Link_Wire().  It is the number of wires without a node number.
+   unlink_wires:=SIZE(WireLst); // Assume all the wires are un-numbered
+
+   FOR k FROM 1 TO SIZE(WireLst) STEP 1 DO
+      x1:=WireLst(k,2); y1:=WireLst(k,3); x2:=WireLst(k,4); y2:=WireLst(k,5);
+      IF WireLst(k,6)<0 THEN
+         // Check if this un-numbered wire is connected to another wire with a node number
+         FOR j FROM k TO SIZE(WireLst) STEP 1 DO
+            IF WireLst(j,6)>=0 THEN
+               IF (x1==WireLst(j,2) AND y1==WireLst(j,3)) OR (x1==WireLst(j,4) AND y1==WireLst(j,5)) OR
+                  (x2==WireLst(j,2) AND y2==WireLst(j,3)) OR (x2==WireLst(j,4) AND y2==WireLst(j,5)) THEN
+                     i:=j; WHILE i<>0 DO i:=Link_Wire(i); END;
+               END;
+            END;
+         END;
+      END;
+      
+      IF WireLst(k,6)<0 THEN
+         WireLst(k,6):=Node_count;
+         Node_count:=Node_count+1;
+      END;
+      
+      i:=k; WHILE i<>0 DO i:=Link_Wire(i); END;
+      IF unlink_wires==0 THEN  // Stop if all the wires have a node number assigned
+         BREAK;
+      END;
+   END;
+   
+   // Verify there are no mistakes (it happens sometimes when wires are too segmented)
+   FOR k FROM 1 TO SIZE(WireLst) STEP 1 DO
+      x1:=WireLst(k,2); y1:=WireLst(k,3); x2:=WireLst(k,4); y2:=WireLst(k,5);
+      FOR j FROM k TO SIZE(WireLst) STEP 1 DO
+         IF (x1==WireLst(j,2) AND y1==WireLst(j,3)) OR (x1==WireLst(j,4) AND y1==WireLst(j,5)) OR
+            (x2==WireLst(j,2) AND y2==WireLst(j,3)) OR (x2==WireLst(j,4) AND y2==WireLst(j,5)) THEN
+             IF WireLst(k,6)<>WireLst(j,6) THEN // The wires touch but they were assigned different node numbers
+                Node_count:=Node_count-1; // We are going to remove one useless node
+                node_low:=MIN(WireLst(k,6), WireLst(j,6));
+                node_high:=MAX(WireLst(k,6), WireLst(j,6));
+                // First: reasign the high node to the low node
+                FOR i FROM 1 TO SIZE(WireLst) STEP 1 DO
+                   IF WireLst(i,6)==node_high THEN
+                      WireLst(i,6):=node_low;
+                   END;
+                END;
+                // Second: decrement all node numbers above the high node
+                FOR i FROM 1 TO SIZE(WireLst) STEP 1 DO
+                   IF WireLst(i,6)>node_high THEN
+                      WireLst(i,6):=WireLst(i,6)-1;
+                   END;
+                END;
+             END;
+         END;
+      END;
+   END;
+   
+    // Copy the node number assigned to wires to the pins they touch
+    FOR j FROM 1 TO SIZE(PinLst) STEP 1 DO
+       IF PinLst(j,4)<0 THEN
+          FOR k FROM 1 TO SIZE(WireLst) STEP 1 DO
+             IF (PinLst(j,2)==WireLst(k,2) AND PinLst(j,3)==WireLst(k,3)) OR
+                (PinLst(j,2)==WireLst(k,4) AND PinLst(j,3)==WireLst(k,5)) THEN
+                PinLst(j,4):=WireLst(k,6);
+             END;
+          END;
+       END;
+    END;
+    
+    // Check for pins without a node number.  At this point they should be connected to another pin without a node number
+    FOR k FROM 1 TO SIZE(PinLst) STEP 1 DO
+       IF PinLst(k,4)<0 THEN
+          PinLst(k,4):=Node_count;
+          Node_count:=Node_count+1;
+          FOR j FROM 1 TO SIZE(PinLst) STEP 1 DO
+             IF j<>k AND (PinLst(j,2)==PinLst(k,2) AND PinLst(j,3)==PinLst(k,3)) THEN
+                PinLst(j,4):=PinLst(k,4);
+             END;
+          END;
+       END;
+    END;
+
+    // Make sure all the pins are connected to other pins by having the same node number
+    FOR k FROM 1 TO SIZE(PinLst) STEP 1 DO
+      i:=0;
+      FOR j FROM 1 TO SIZE(PinLst) STEP 1 DO
+         IF k<>j THEN
+           IF PinLst(j,4)==PinLst(k,4) THEN // Same node?
+              i:=1;
+              BREAK;
+           END;
+         END;
+      END;
+      IF i==0 THEN
+         My_PRINT("ERROR: Unconnected pin at (" + R2I(PinLst(k,2)) + "," + R2I(PinLst(k,3)) + ")", 1);     
+         My_Term();
+         RETURN 0;
+      END;
+    END;
+    
+    // Assign the node numbers to all the pins and wires in the Items list
+    FOR k FROM 1 TO SIZE(PinLst)  STEP 1 DO Items(PinLst(k,1),10):=PinLst(k,4);  END;
+    
+    My_PRINT("Done in " + R2I(TICKS()-Ticks1) + " ms" , 1);
+
+    RETURN Node_count-1;
+END;
+
+LOCAL Res:={}, Ind:={}, Cap:={}, Imp:={}, Idc:={}, Vdc:={}, Iac:={}, Vac:={};
+LOCAL Diodes:={}, NPN:={}, ANPN:={}, PNP:={}, APNP:={}, NMOS:={}, PMOS:={};
+LOCAL OpAmps:={}, VCCS:={}, VCVS:={}, CCCS:={}, CCVS:={}, IDTR:={}; SC:={};
+LOCAL VT, Temperature, Max_Iterations, Max_Error;
+LOCAL Frequency, IdealLC;
+LOCAL DC_Mode, DC_Precision;
+LOCAL AC_Mode, AC_Precision;
+
+LOCAL Load_Components()
+BEGIN
+   LOCAL j;
+   LOCAL value, value2, value3, value4, value5;
+   LOCAL node_k, node_m; // For diodes
+   LOCAL node_c, node_b, node_e; // For BJTs
+   LOCAL node_g, node_d, node_s; // For MOSFETS
+
+   // Reset all the circuit component lists
+   Res:={}; Ind:={}; Cap:={}; Imp:={}; Idc:={}; Vdc:={}; Iac:={}; Vac:={};
+   Diodes:={}; NPN:={}; ANPN:={}; PNP:={}; APNP:={}; NMOS:={}; PMOS:={};
+   OpAmps:={}; VCCS:={}; VCVS:={}; CCCS:={}; CCVS:={}; IDTR:={}; SC:={};
+
+   // Default configuration for DC analysis
+   VT:=0.025;
+   Max_Iterations:=100;
+   Max_Error:=1.0e-8;
+   Temperature:=(VT*1.6021766208E-19)/1.38064852E-23;
+   Frequency:=60;
+   IdealLC:=0; // 0: Compute the complex impedance of L and C at 'Frequency'
+   DC_Mode:=0;
+   DC_Precision:=-1;
+   AC_Mode:=0;
+   AC_Precision:=-1;
+
+   FOR j FROM 1 TO SIZE(Items) STEP 1 DO
+      CASE
+      
+        IF Items(j,1)=="DCOPT" THEN // Options for DC analysis
+           Max_Error:=S2R(Items(j+2,9));
+           Max_Iterations:=S2R(Items(j+3,9));
+           Temperature:=S2R(Items(j+4,9));
+           VT:=(1.38064852E-23*Temperature)/1.6021766208E-19;
+           DC_Mode:=S2R(Items(j+5,9));
+           DC_Precision:=S2R(Items(j+6,9));
+        END;
+        
+        IF Items(j,1)=="ACOPT" THEN // Options for AC analysis
+           Frequency:=S2R(Items(j+2,9));
+           IdealLC:=S2R(Items(j+3,9));
+           AC_Mode:=S2R(Items(j+4,9));
+           AC_Precision:=S2R(Items(j+5,9));
+        END;
+     
+        IF Items(j,1)=="R" OR Items(j,1)=="R2" OR Items(j,1)=="R3" THEN // Resistor
+           node_k:=Items(j+1,10);
+           node_m:=Items(j+2,10);
+           value:=S2R(Items(j+4,9));
+           IF value==0 THEN value:=1.0e-10; END; // prevent division by zero
+           Res(SIZE(Res)+1):={j, node_k, node_m, value};
+           My_PRINT(Items(j+3,9)+ ", " + R2I(node_k) + ", " + R2I(node_m) + ", " +value, 1);
+        END;
+
+        IF Items(j,1)=="L" THEN // Inductor
+           node_k:=Items(j+1,10);
+           node_m:=Items(j+2,10);
+           value:=S2R(Items(j+4,9));
+           IF value==0 THEN value:=1.0e-15; END; // prevent division by zero
+           Ind(SIZE(Ind)+1):={j, node_k, node_m, value};
+           My_PRINT(Items(j+3,9)+ ", " + R2I(node_k) + ", " + R2I(node_m) + ", " +value, 1);
+        END;
+  
+        IF Items(j,1)=="C" THEN // Capacitor
+           node_k:=Items(j+1,10);
+           node_m:=Items(j+2,10);
+           value:=S2R(Items(j+4,9));
+           IF value==0 THEN value:=1.0e-15; END; // prevent division by zero
+           Cap(SIZE(Cap)+1):={j, node_k, node_m, value};
+           My_PRINT(Items(j+3,9)+ ", " + R2I(node_k) + ", " + R2I(node_m) + ", " +value, 1);
+        END;
+
+        IF Items(j,1)=="IMP" THEN // Complex impedance
+           node_k:=Items(j+1,10);
+           node_m:=Items(j+2,10);
+           value:=S2C(Items(j+4,9));
+           IF ABS(value)==0 THEN value:=1.0e-15; END; // prevent division by zero
+           Imp(SIZE(Imp)+1):={j, node_k, node_m, value};
+           My_PRINT(Items(j+3,9)+ ", " + R2I(node_k) + ", " + R2I(node_m) + ", (" + ABS(value)+","+ARG(value)+")", 1);
+        END;
+        
+        IF Items(j,1)=="VAC" THEN // AC voltage source
+           node_k:=Items(j+1,10);
+           node_m:=Items(j+2,10);
+           value:=S2C(Items(j+4,9)); // A complex number
+           Vac(SIZE(Vac)+1):={j, node_k, node_m, value, 0}; // The last item is used as a pointer where the calculated source current is stored
+           My_PRINT(Items(j+3,9)+ ", " + R2I(node_k) + ", " + R2I(node_m) + ", " + value, 1);
+        END;
+
+        IF Items(j,1)=="IAC" THEN // AC current source
+           node_k:=Items(j+1,10);
+           node_m:=Items(j+2,10);
+           value:=S2C(Items(j+4,9));  // A complex number
+           value2:=S2R(Items(j+5,9)); // Resistance
+           Iac(SIZE(Iac)+1):={j, node_k, node_m, value, value2};
+           My_PRINT(Items(j+3,9)+ ", " + R2I(node_k) + ", " + R2I(node_m) + ", " + value + ", " + value2, 1);
+        END;
+  
+        IF Items(j,1)=="V" THEN // DC Voltage source
+           node_k:=Items(j+1,10); // '+' pin
+           node_m:=Items(j+2,10); // '-' pin
+           value:=S2R(Items(j+4,9));
+           Vdc(SIZE(Vdc)+1):={j, node_k, node_m, value, 0}; // The last item is used as a pointer where the calculated source current is stored
+           My_PRINT(Items(j+3,9) + ", " + R2I(node_k) + ", " + R2I(node_m) + ", " +value, 1);
+        END;
+
+        IF Items(j,1)=="SC" THEN // Short circuit
+           node_k:=Items(j+1,10); // '+' pin
+           node_m:=Items(j+2,10); // '-' pin
+           SC(SIZE(SC)+1):={j, node_k, node_m, 0}; // The last item is used as a pointer where the calculated short current is stored
+           My_PRINT(Items(j+3,9) + ", " + R2I(node_k) + ", " + R2I(node_m), 1);
+        END;
+        
+        IF Items(j,1)=="VCCS" THEN // Voltage controlled current source
+           LOCAL vk, vm, ik, im, g;
+           vk:=Items(j+1,10);
+           vm:=Items(j+2,10);
+           ik:=Items(j+3,10);
+           im:=Items(j+4,10);
+           g:=S2R(Items(j+6,9));
+           VCCS(SIZE(VCCS)+1):={j, vk, vm, ik, im, g};
+           My_PRINT(Items(j+4,9) + ", " + R2I(vk) + ", " + R2I(vm) + ", " + R2I(ik) + ", " + R2I(im) + ", " + g, 1);
+        END;
+        
+        IF Items(j,1)=="VCVS" THEN // Voltage controlled voltage source
+           LOCAL nik, nim, nok, nom, u;
+           nik:=Items(j+1,10);
+           nim:=Items(j+2,10);
+           nok:=Items(j+3,10);
+           nom:=Items(j+4,10);
+           u:=S2R(Items(j+6,9));
+           VCVS(SIZE(VCVS)+1):={j, nik, nim, nok, nom, u};
+           My_PRINT(Items(j+5,9) + ", " + R2I(nik) + ", " + R2I(nim) + ", " + R2I(nok) + ", " + R2I(nom) + ", " + u, 1);
+        END;
+        
+        IF Items(j,1)=="CCCS" THEN // Current controlled current source
+           LOCAL nik, nim, nok, nom, a;
+           nik:=Items(j+1,10);
+           nim:=Items(j+2,10);
+           nok:=Items(j+3,10);
+           nom:=Items(j+4,10);
+           a:=S2R(Items(j+6,9));
+           CCCS(SIZE(CCCS)+1):={j, nik, nim, nok, nom, a};
+           My_PRINT(Items(j+5,9) + ", " + R2I(nik) + ", " + R2I(nim) + ", " + R2I(nok) + ", " + R2I(nom) + ", " + a, 1);
+        END;
+  
+        IF Items(j,1)=="CCVS" THEN // Current controlled voltage source
+           LOCAL nik, nim, nok, nom, r;
+           nik:=Items(j+1,10);
+           nim:=Items(j+2,10);
+           nok:=Items(j+3,10);
+           nom:=Items(j+4,10);
+           r:=S2R(Items(j+6,9));
+           CCVS(SIZE(CCVS)+1):={j, nik, nim, nok, nom, r};
+           My_PRINT(Items(j+5,9) + ", " + R2I(nik) + ", " + R2I(nim) + ", " + R2I(nok) + ", " + R2I(nom) + ", " + r, 1);
+        END;
+        
+        IF Items(j,1)=="O" THEN // Ideal OpAmp
+           OpAmps(SIZE(OpAmps)+1):={j, Items(j+1,10), Items(j+2,10), Items(j+3,10)}; // -, +, and output pins of opamp
+           My_PRINT(Items(j+4,9) + ", " + R2I(Items(j+1,10)) + ", " + R2I(Items(j+2,10)) + ", " + R2I(Items(j+3,10)), 1);
+        END;
+  
+        IF Items(j,1)=="IDTR" THEN // Ideal transformer
+           LOCAL nik, nim, nok, nom, n;
+           nik:=Items(j+1,10);
+           nim:=Items(j+2,10);
+           nok:=Items(j+3,10);
+           nom:=Items(j+4,10);
+           n:=S2R(Items(j+6,9));
+           IDTR(SIZE(IDTR)+1):={j, nik, nim, nok, nom, n};
+           My_PRINT(Items(j+5,9) + ", " + R2I(nik) + ", " + R2I(nim) + ", " + R2I(nok) + ", " + R2I(nom) + ", " + n, 1);
+        END;
+        
+        IF Items(j,1)=="I" THEN // DC current source
+           node_k:=Items(j+1,10); // 'k' pin
+           node_m:=Items(j+2,10); // 'm' pin
+           value:=S2R(Items(j+4,9));
+           value2:=S2R(Items(j+5,9));
+           Idc(SIZE(Idc)+1):={j, node_k, node_m, value, value2};
+           My_PRINT(Items(j+3,9) + ", " + R2I(node_k) + ", " + R2I(node_m) + ", " + value + ", " + value2, 1);
+        END;
+        
+        IF Items(j,1)=="D" OR Items(j,1)=="LED" THEN // Regular diodes and LEDs
+           node_k:=Items(j+1,10); // 'A' pin
+           node_m:=Items(j+2,10); // 'K' pin
+           value:=S2R(Items(j+4,9)); // Is
+           value2:=S2R(Items(j+5,9)); // n
+           Diodes(SIZE(Diodes)+1):={j, node_k, node_m, value, value2, 2000, 1.0E-4, 600, 0, 0}; // The last five are VZt, IZt, rz, calculated gd and Io
+           My_PRINT(Items(j+3,9) + ", " + R2I(node_k) + ", " + R2I(node_m) + ", " + value + ", " + value2, 1);
+        END;
+  
+        IF Items(j,1)=="Z" THEN // Zener diodes
+           node_k:=Items(j+1,10); // 'A' pin
+           node_m:=Items(j+2,10); // 'K' pin
+           value:=S2R(Items(j+4,9)); // Is
+           value2:=S2R(Items(j+5,9)); // n
+           value3:=S2R(Items(j+6,9)); // VZt
+           value4:=S2R(Items(j+7,9)); // IZt
+           value5:=S2R(Items(j+8,9)); // rz
+           Diodes(SIZE(Diodes)+1):={j, node_k, node_m, value, value2, value3, value4, value5, 0, 0}; // The last four are VZt, IZt, rz, calculated gd and Io
+           My_PRINT(Items(j+3,9) + ", " + R2I(node_k) + ", " + R2I(node_m) + ", " + value + ", " + value2 + ", " + value3 + ", " + value4 + ", " + value5, 1);
+        END;
+        
+        IF Items(j,1)=="NPN" THEN
+           node_c:=Items(j+1,10); // Collector pin
+           node_b:=Items(j+2,10); // Base pin
+           node_e:=Items(j+3,10); // Emitter pin
+           value:=S2R(Items(j+5,9)); // Is
+           value2:=S2R(Items(j+6,9)); // BetaF
+           IFERR value3:=S2R(Items(j+7,9)) THEN value3:=10; END; // BetaR
+           IFERR value4:=S2R(Items(j+8,9)) THEN value4:=1e8; END; // VA, Early voltage
+           IF value2<=0 THEN
+                My_PRINT("Warning Beta<=0. Changed to 100.", 1);
+                value2:=100;
+             END;
+           IF value3<=0 THEN
+                My_PRINT("Warning BetaR<=0. Changed to 10.", 1);
+                value3:=10;
+             END;
+         NPN(SIZE(NPN)+1):={j, node_c, node_b, node_e, value, value2, value3, value4, 0, 0}; // Last two are for ie and ic
+           My_PRINT(Items(j+4,9) + ", " + R2I(node_c) + ", " + R2I(node_b) + ", " + R2I(node_e) + ", " + value + ", " + value2 + ", " + value3 + ", " + value4, 1);
+        END;
+
+        IF Items(j,1)=="ANPN" THEN
+           node_c:=Items(j+1,10); // Collector pin
+           node_b:=Items(j+2,10); // Base pin
+           node_e:=Items(j+3,10); // Emitter pin
+           value:=S2R(Items(j+5,9)); // VBE
+           value2:=S2R(Items(j+6,9)); // Beta
+           value3:=S2R(Items(j+7,9)); // VA
+           IF value2<=0 THEN
+                My_PRINT("Warning Beta<=0. Changed to 100.", 1);
+                value2:=100;
+             END;
+         ANPN(SIZE(ANPN)+1):={j, node_c, node_b, node_e, value, value2, value3, 0, 0}; // Last two: extra row/col and IB
+           My_PRINT(Items(j+4,9) + ", " + R2I(node_c) + ", " + R2I(node_b) + ", " + R2I(node_e) + ", " + value + ", " + value2 + ", " + value3, 1);
+        END;
+        
+        IF Items(j,1)=="PNP" THEN
+           node_e:=Items(j+1,10); // Emitter pin
+           node_b:=Items(j+2,10); // Base pin
+           node_c:=Items(j+3,10); // Collector pin
+           value:=S2R(Items(j+5,9)); // Is
+           value2:=S2R(Items(j+6,9)); // BetaF
+           IFERR value3:=S2R(Items(j+7,9)) THEN value3:=10; END; // BetaR
+           IFERR value4:=S2R(Items(j+8,9)) THEN value4:=1e8; END; // VA, Early voltage
+           IF value2<=0 THEN
+                My_PRINT("Warning Beta<=0. Changed to 100.", 1);
+                value2:=100;
+             END;
+           IF value3==0 THEN
+                My_PRINT("Warning BetaR<=0. Changed to 10.", 1);
+                value3:=10;
+             END;
+         PNP(SIZE(PNP)+1):={j, node_e, node_b, node_c, value, value2, value3, value4, 0, 0}; // Last two are for ie and ic
+           My_PRINT(Items(j+4,9) + ", " + R2I(node_e) + ", " + R2I(node_b) + ", " + R2I(node_c) + ", " + value + ", " + value2 + ", " + value3 + ", " + value4, 1);
+        END;
+        
+        IF Items(j,1)=="APNP" THEN
+           node_e:=Items(j+1,10); // Emitter pin
+           node_b:=Items(j+2,10); // Base pin
+           node_c:=Items(j+3,10); // Collector pin
+           value:=S2R(Items(j+5,9)); // VEB
+           value2:=S2R(Items(j+6,9)); // Beta
+           value3:=S2R(Items(j+7,9)); // VA
+           IF value2<=0 THEN
+                My_PRINT("Warning Beta<=0. Changed to 100.", 1);
+                value2:=100;
+             END;
+         APNP(SIZE(APNP)+1):={j, node_e, node_b, node_c, value, value2, value3, 0, 0}; // Last two: extra row/col and IB
+           My_PRINT(Items(j+4,9) + ", " + R2I(node_e) + ", " + R2I(node_b) + ", " + R2I(node_c) + ", " + value + ", " + value2 + ", " + value3, 1);
+        END;
+  
+        IF Items(j,1)=="NMOS" THEN
+           node_d:=Items(j+1,10); // Drain pin
+           node_g:=Items(j+2,10); // Gate pin
+           node_s:=Items(j+3,10); // Source pin
+           value:=S2R(Items(j+5,9)); // Vt
+           value2:=S2R(Items(j+6,9)); // Kn'(W/L)
+           value3:=S2R(Items(j+7,9)); // VA
+           NMOS(SIZE(NMOS)+1):={j, node_d, node_g, node_s, value, value2, value3, 0}; // Last one(NMOS(n,8)) used to store VGS
+           My_PRINT(Items(j+4,9) + ", " + R2I(node_d) + ", " + R2I(node_g) + ", " + R2I(node_s) + ", " + value + ", " + value2 + ", " + value3, 1);
+        END;
+  
+        IF Items(j,1)=="PMOS" THEN
+           node_s:=Items(j+1,10); // Source pin
+           node_g:=Items(j+2,10); // Gate pin
+           node_d:=Items(j+3,10); // Drain pin
+           value:=S2R(Items(j+5,9)); // Vt
+           value2:=S2R(Items(j+6,9)); // Kn'(W/L)
+           value3:=S2R(Items(j+7,9)); // VA
+           PMOS(SIZE(PMOS)+1):={j, node_s, node_g, node_d, value, value2, value3, 0}; // Last one used to store VSG
+           My_PRINT(Items(j+4,9) + ", " + R2I(node_s) + ", " + R2I(node_g) + ", " + R2I(node_d) + ", " + value + ", " + value2 + ", " + value3, 1);
+        END;
+  
+    END; // CASE
+   END;
+END;
+
+LOCAL MatrixY, VectorV, VectorI; // Matrix and vectors with linear contributions only
+LOCAL MatrixY_NL, VectorI_NL, VectorV_NL; // Matrix and vectors with linear and non-linear contributions
+LOCAL Node_count, Extra_count;
+
+LOCAL AddY (row, col, val)
+BEGIN
+  IF row>0 AND col>0 THEN
+     MatrixY(row, col):=MatrixY(row, col)+val;
+  END;
+END;
+
+LOCAL AddI (row, val)
+BEGIN
+  IF row>0 THEN
+     VectorI(row):=VectorI(row)+val;
+  END;
+END;
+
+LOCAL AddYNL (row, col, val)
+BEGIN
+  IF row>0 AND col>0 THEN
+     MatrixY_NL(row, col):=MatrixY_NL(row, col)+val;
+  END;
+END;
+
+LOCAL AddINL (row, val)
+BEGIN
+  IF row>0 THEN
+     VectorI_NL(row):=VectorI_NL(row)+val;
+  END;
+END;
+
+LOCAL Add_Resistors()
+BEGIN
+   LOCAL k;
+   // Add the Resistors
+   FOR k FROM 1 to SIZE(Res) DO
+      LOCAL nk, nm, r;
+      nk:=Res(k, 2);
+      nm:=Res(k, 3);
+      r:=Res(k, 4);
+      AddY(nk,nk,1/r);
+      AddY(nm,nm,1/r);
+      AddY(nk,nm,-1/r);
+      AddY(nm,nk,-1/r);
+   END;
+END;
+
+LOCAL Add_Common_MNA()
+BEGIN
+   LOCAL k;
+   // Add the ideal OpAmps.  They are inserted in the Y matrix after the DC voltage sources
+   FOR k FROM 1 TO SIZE(OpAmps) DO
+      LOCAL node_p, node_n, node_o, en;
+      Extra_count:=Extra_count+1;
+      // Get the three node numbers from the pins
+      node_n:=OpAmps(k,2); // '-' pin
+      node_p:=OpAmps(k,3); // '+' pin
+      node_o:=OpAmps(k,4); // output pin
+      en:=Node_count+Extra_count;
+      
+      AddY(en, node_n,-1);
+      AddY(en, node_p,1);
+      AddY(node_o, en,1);
+   END;
+   
+   // Add the voltage controlled current sources
+   FOR k FROM 1 TO SIZE(VCCS) DO
+      LOCAL vk, vm, ik, im, g;
+       vk:=VCCS(k,2);
+       vm:=VCCS(k,3);
+       ik:=VCCS(k,4);
+       im:=VCCS(k,5);
+       g:=VCCS(k,6);
+       AddY(ik,vk,g);
+       AddY(ik,vm,-g);
+       AddY(im,vk,-g);
+       AddY(im,vm,g);
+   END;
+
+   // Add the voltage controlled voltage sources
+   FOR k FROM 1 TO SIZE(VCVS) DO
+       LOCAL nik, nim, nok, nom, u, en;
+       Extra_count:=Extra_count+1;
+       nik:=VCVS(k,2);
+       nim:=VCVS(k,3);
+       nok:=VCVS(k,4);
+       nom:=VCVS(k,5);
+       u:=VCVS(k,6);
+       en:=Node_count+Extra_count;
+       
+        AddY(en, nik, -u);
+        AddY(en, nim, u);
+        AddY(en, nok, 1);
+        AddY(nok, en, 1);
+        AddY(en, nom, -1);
+        AddY(nom, en, -1);
+   END;
+   
+   // Add the current controlled current sources
+   FOR k FROM 1 TO SIZE(CCCS) DO
+       LOCAL nik, nim, nok, nom, a, en;
+       Extra_count:=Extra_count+1;
+       nik:=CCCS(k,2);
+       nim:=CCCS(k,3);
+       nok:=CCCS(k,4);
+       nom:=CCCS(k,5);
+       a:=CCCS(k,6);
+       en:=Node_count+Extra_count;
+
+       AddY(en, nik, 1);
+       AddY(nik, en, 1);
+       AddY(en, nim, -1);
+       AddY(nim, en, -1);
+       AddY(nok, en, a);
+       AddY(nom, en, -a);
+   END;
+
+   // Add the current controlled voltage sources
+   FOR k FROM 1 TO SIZE(CCVS) DO
+       LOCAL nik, nim, nok, nom, r, en;
+       Extra_count:=Extra_count+1;
+       nik:=CCVS(k,2);
+       nim:=CCVS(k,3);
+       nok:=CCVS(k,4);
+       nom:=CCVS(k,5);
+       r:=CCVS(k,6);
+       en:=Node_count+Extra_count;
+       
+       AddY(en, nik, 1);
+       AddY(nik, en, 1);
+       AddY(en, nim, -1);
+       AddY(nim, en, -1);
+        
+       AddY(en+1, en, -r);
+        
+       Extra_count:=Extra_count+1;
+       en:=Node_count+Extra_count;
+       AddY(en, nok, 1);
+       AddY(nok, en, 1);
+       AddY(en, nom, -1);
+       AddY(nom, en, -1);
+   END;
+
+   // Add the ideal transformers
+   FOR k FROM 1 TO SIZE(IDTR) DO
+       LOCAL nik, nim, nok, nom, n, en;
+       Extra_count:=Extra_count+1;
+       nik:=IDTR(k,2);
+       nim:=IDTR(k,3);
+       nok:=IDTR(k,4);
+       nom:=IDTR(k,5);
+       n:=IDTR(k,6);
+       en:=Node_count+Extra_count;
+
+       AddY(en, nik, 1);
+       AddY(nik, en, 1);
+       AddY(en, nim, -1);
+       AddY(nim, en, -1);
+       AddY(en, nok, -n);
+       AddY(nok, en, -n);
+       AddY(en, nom, n);
+       AddY(nom, en, n);
+   END;
+END;
+
+// Add ideal switch to matrix Y.  See page 118 of "Computer Methods..."
+LOCAL AddSWY(nk, nm, OnOff) // OnOff<=0 means open.  OnOff>0 means closed.
+BEGIN
+      LOCAL en, FF;
+      Extra_count:=Extra_count+1;
+      en:=Node_count+Extra_count;
+
+      IF OnOff<=0 THEN
+         FF:=0; // Open circuit
+      ELSE
+         FF:=1; // Short circuit
+      END;
+      
+      AddY(nk,en,1);
+      AddY(nm,en,-1);
+      AddY(en,nk,FF);
+      AddY(en,nm,-FF);
+      AddY(en,en,FF-1);
+END;
+
+LOCAL DC_Solve(showterm)
+BEGIN
+   LOCAL j, k, m;
+   LOCAL Ticks1, Ticks2;
+   LOCAL node_k, node_m; // For diodes
+   LOCAL node_c, node_b, node_e; // For BJTs
+   LOCAL node_g, node_d, node_s; // For MOSFETS
+   LOCAL Current_Max_Error;
+   
+   // Create the netlist.  The returned number of nodes is used to
+   // determine the size of the matrix and vectors.
+   
+   Node_count:=Create_Netlist();
+    
+   IF Node_count<1 THEN
+      My_PRINT("ERROR: Netlist creation failed!", 1);
+      My_Term();
+      RETURN;
+   END;
+
+   // Load the circuit component lists:
+   Load_Components();
+
+   Extra_count:=0;
+   // Account for MNA components.  They increase the dimensions of the Y matrix by 1 or 2.
+   Extra_count:=Extra_count+SIZE(Vdc);    // DC Voltage source
+   Extra_count:=Extra_count+SIZE(OpAmps); // OpAmp
+   Extra_count:=Extra_count+SIZE(Ind);    // Inductor (as a closed switch)
+   Extra_count:=Extra_count+SIZE(Vac);    // AC voltage source (as a closed switch)
+   Extra_count:=Extra_count+SIZE(Cap);    // Capacitor (as an open switch)
+   Extra_count:=Extra_count+SIZE(Iac);    // AC current source (as an open switch)
+   Extra_count:=Extra_count+SIZE(VCVS);   // Voltage controlled voltage source
+   Extra_count:=Extra_count+SIZE(CCCS);   // Current controlled current source
+   Extra_count:=Extra_count+SIZE(CCVS)*2; // Current controlled voltage source
+   Extra_count:=Extra_count+SIZE(IDTR);   // Ideal transformer
+   Extra_count:=Extra_count+SIZE(ANPN);   // Simple active model of the NPN BJT
+   Extra_count:=Extra_count+SIZE(APNP);   // Simple active model of the PNP BJT
+   Extra_count:=Extra_count+SIZE(SC);     // Short circuits
+
+   // Create matrix of impedances and the vector of state variables and independent sources:
+   MatrixY:=MAKEMAT(0,Node_count+Extra_count,Node_count+Extra_count);
+   VectorI:=MAKEMAT(0,Node_count+Extra_count);
+   VectorV:=MAKEMAT(0,Node_count+Extra_count);
+   Extra_count:=0;
+
+   // Fill the matrix Y.
+   
+   // Add the Resistors
+   Add_Resistors();
+   
+   // Add DC current sources
+   FOR k FROM 1 to SIZE(Idc) DO
+      LOCAL nk, nm, val, r;
+      nk:=Idc(k, 2);
+      nm:=Idc(k, 3);
+      val:=Idc(k, 4);
+      r:=Idc(k, 5);
+      // Add internal resistance to matrix
+      IF r>0 THEN
+         AddY(nk,nk,1.0/r);
+         AddY(nm,nm,1.0/r);
+         AddY(nk,nm,-1.0/r);
+         AddY(nm,nk,-1.0/r);
+      END;
+      // Add to vector of sources
+      AddI(nk,val);
+      AddI(nm,-val);
+   END;
+    
+   // DC voltage sources
+   FOR k FROM 1 to SIZE(Vdc) DO
+      LOCAL nk, nm, v, en;
+      Extra_count:=Extra_count+1;
+      en:=Node_count+Extra_count;
+      nk:=Vdc(k,2);
+      nm:=Vdc(k,3);
+      v:=Vdc(k,4);
+      Vdc(k,5):=en; // The position in the vector of solutions where to find the source current
+      VectorI(en):=v;
+      AddY(nk,en,1);
+      AddY(en,nk,1);
+      AddY(nm,en,-1);
+      AddY(en,nm,-1);
+   END;
+
+   // Short Circuits as 0V voltage sources
+   FOR k FROM 1 to SIZE(SC) DO
+      LOCAL nk, nm, v, en;
+      Extra_count:=Extra_count+1;
+      en:=Node_count+Extra_count;
+      nk:=SC(k,2);
+      nm:=SC(k,3);
+      SC(k,4):=en;
+      VectorI(en):=0;
+      AddY(nk,en,1);
+      AddY(en,nk,1);
+      AddY(nm,en,-1);
+      AddY(en,nm,-1);
+   END;
+   
+   // Add MNA devices common to AC and DC analysis
+   Add_Common_MNA();
+
+   // Add the simplified active model of a NPN BJT using a combination of a CCCS and a DC voltage source
+   FOR k FROM 1 TO SIZE(ANPN) DO
+       LOCAL nik, nim, nok, nom, en;
+       LOCAL nc, nb, ne, VBE, Beta, VA;
+       Extra_count:=Extra_count+1;
+       en:=Node_count+Extra_count;
+       
+       nc:=ANPN(k,2);
+       nb:=ANPN(k,3);
+       ne:=ANPN(k,4);
+       VBE:=ANPN(k,5);
+       Beta:=ANPN(k,6);
+       VA:=ANPN(k,7); // Not used in DC...
+       ANPN(k,8):=en; // Need this location to recover IB for AC analysis
+       
+       nik:=nb; nim:=ne; nok:=nc; nom:=ne;
+
+       AddY(en, nik, 1);
+       AddY(nik, en, 1);
+       AddY(en, nim, -1);
+       AddY(nim, en, -1);
+       AddY(nok, en, Beta);
+       AddY(nom, en, -Beta);
+       VectorI(en):=VBE;
+   END;
+
+   // Add the simplified active model of a PNP BJT using a combination of a CCCS and a DC voltage source
+   FOR k FROM 1 TO SIZE(APNP) DO
+       LOCAL nik, nim, nok, nom, en;
+       LOCAL nc, nb, ne, VEB, Beta, VA;
+       Extra_count:=Extra_count+1;
+       en:=Node_count+Extra_count;
+       
+       ne:=APNP(k,2);
+       nb:=APNP(k,3);
+       nc:=APNP(k,4);
+       VEB:=APNP(k,5);
+       Beta:=APNP(k,6);
+       VA:=APNP(k,7); // Not used in DC...
+       APNP(k,8):=en; // Need this location to recover IB for AC analysis
+       
+       nik:=ne; nim:=nb; nok:=ne; nom:=nc;
+
+       AddY(en, nik, 1);
+       AddY(nik, en, 1);
+       AddY(en, nim, -1);
+       AddY(nim, en, -1);
+       AddY(nok, en, Beta);
+       AddY(nom, en, -Beta);
+       VectorI(en):=VEB;
+   END;
+  
+   // Add Inductors as short circuits
+   FOR k FROM 1 TO SIZE(Ind) DO
+      LOCAL nk, nm;
+      nk:=Ind(k,2);
+      nm:=Ind(k,3);
+      AddSWY(nk, nm, 1);
+   END;
+
+   // Add AC voltage sources as short circuits
+   FOR k FROM 1 TO SIZE(Vac) DO
+      LOCAL nk, nm;
+      nk:=Vac(k,2);
+      nm:=Vac(k,3);
+      AddSWY(nk, nm, 1);
+   END;
+   
+   // Capacitors are replaced with open circuits 
+   FOR k FROM 1 to SIZE(Cap) DO
+      LOCAL nk, nm;
+      nk:=Cap(k, 2);
+      nm:=Cap(k, 3);
+      AddSWY(nk, nm, 0);
+   END;
+
+   // AC current sources are replaced with open circuits 
+   FOR k FROM 1 to SIZE(Iac) DO
+      LOCAL nk, nm;
+      nk:=Iac(k, 2);
+      nm:=Iac(k, 3);
+      AddSWY(nk, nm, 0);
+   END; 
+   
+   //Used these two to debug the produced matrix and vector
+   //My_PRINT("MatrixY: " + MatrixY, 1);
+   //My_PRINT("VectorI: " + VectorI, 1);
+   
+   LOCAL good_enough;
+   
+   VectorV_NL:=MAKEMAT(0,Node_count+Extra_count); // Need to start with solution vector filled with zeros
+   
+   My_PRINT("VT= " + VT + " @ T=" + Temperature, 1);   
+   Ticks1:=TICKS();
+  
+   FOR j FROM 1 TO Max_Iterations STEP 1 DO
+     MatrixY_NL:=MatrixY;
+     VectorI_NL:=VectorI;
+     
+     // Add the contribution of diodes using the diode equation.
+     FOR k FROM 1 TO SIZE(Diodes) DO
+        LOCAL gd, Io, vk, vm, id, vd, vdmax;
+        LOCAL VZt, VZo, IZt, rz; // For zener diodes
+        LOCAL Is, n;
+
+        // Fetch the diode information
+        node_k:=Diodes(k, 2);
+        node_m:=Diodes(k, 3);
+        Is:=Diodes(k, 4);
+        n:=Diodes(k, 5);
+        VZt:=Diodes(k, 6);
+        IZt:=Diodes(k, 7);
+        rz:=Diodes(k, 8);
+        gd:=Diodes(k, 9); // Retrive the previously calculated value of gd
+        Io:=Diodes(k, 10); // Retrive the previously calculated value of Io
+        VZo:=-1.0*(VZt-rz*IZt);
+        
+        CASE
+           IF Is<=1e-20 THEN vdmax:=3.5; END;
+           IF Is<=1e-19 THEN vdmax:=3.0; END;
+           IF Is<=1e-18 THEN vdmax:=2.5; END;
+           IF Is<=1e-17 THEN vdmax:=2.0; END;
+           IF Is<=1e-16 THEN vdmax:=1.5; END;
+           IF Is<=1e-15 THEN vdmax:=1.0; END;
+           DEFAULT vdmax:=0.7;
+        END;  
+        
+        // Get vd
+        IF j==1 THEN // For the first iteration use a guess of vd
+           vd:=0.6;
+        ELSE
+           IF node_k > 0 THEN vk:=VectorV(node_k); ELSE vk:=0; END;
+           IF node_m > 0 THEN vm:=VectorV(node_m); ELSE vm:=0; END;
+           vd:=vk-vm;
+        END;
+        
+        IF vd > VZo THEN // Not in the zener/breakdown region
+           // Prevent exponential overflow.  Check "Computer Methods for Circuit Analysis and Design" pages 350 & 351
+           IF vd>vdmax THEN // Should work for silicon diodes and LEDs
+              id:=gd*vd-Io;
+              vd:=n*VT*ln((id/Is)+1);
+           END;
+           IF vd<-0.4 THEN vd:=-0.4; END;
+
+           // The diode model is a conductance (gd) calculated as the partial derivative of
+           // the diode equation did/dvd evaluated at vd, in parallel with a current source (Io):
+           
+           // Calculate gd and add it to Matrix_NL
+           gd:=(Is/(n*VT))*exp(vd/(n*VT));
+                      
+           AddYNL(node_k, node_k, gd);
+           AddYNL(node_m, node_m, gd);
+           AddYNL(node_k, node_m, -gd);
+           AddYNL(node_m, node_k, -gd);
+           Diodes(k, 9):=gd; // Save gd in case it is needed for the next iteration
+           
+           // Calculate Io and add it to Vector_NL
+           Io:=vd*gd-Is*(exp(vd/(n*VT))-1);           
+           AddINL(node_k, Io);
+           AddINL(node_m,-Io);
+           Diodes(k, 10):=Io; // Save Io in case is needed for the next iteration
+
+        ELSE // In zener/breakdown region
+           // Model the zener/breakdown as a fixed conductance and current source
+           IF rz==0 THEN rz:=1e-10; END;
+           gd:=1.0/rz;
+           Diodes(k, 9):=gd;
+           AddYNL(node_k, node_k,gd);
+           AddYNL(node_m, node_m,gd);
+           AddYNL(node_k, node_m,-gd);
+           AddYNL(node_m, node_k,-gd);
+           // Calculate Io and add it to Vector_NL
+           Io:=(-1.0*VZo)/rz;          
+           AddINL(node_k,-Io);
+           AddINL(node_m,Io);
+        END;
+     END;
+
+     // Ebers-Moll model for NPN BJT. Follows "Electronic Circuit & System Simulation Methods" p.p. 301-302
+     FOR k FROM 1 TO SIZE(NPN) DO
+        LOCAL vc, vb, ve, vbe, vbc;
+        LOCAL ie, ic, AlphaF, AlphaR, BetaF, BetaR, Ics, Ies;
+        LOCAL gee, gec, gce, gcc;
+        LOCAL Ieq, Icq;
+        LOCAL Is, VA;
+        
+        // Fetch the NPN information
+        node_c:=NPN(k, 2);
+        node_b:=NPN(k, 3);
+        node_e:=NPN(k, 4);
+        Is:=NPN(k, 5);
+        BetaF:=NPN(k, 6);
+        BetaR:=NPN(k, 7);
+        VA:=NPN(k, 8);
+        ie:=NPN(k, 9);
+        ic:=NPN(k, 10);
+
+        AlphaF:=BetaF/(BetaF+1);
+        AlphaR:=BetaR/(BetaR+1);
+        
+        Ics:=Is/AlphaR;
+        Ies:=Is/AlphaF;
+
+        // Get vbe and vbc
+        IF j==1 THEN // For the first iteration use a guess of vbe and vbc
+           vbe:=0.6;
+           vbc:=-0.2;
+        ELSE
+           IF node_c > 0 THEN vc:=VectorV(node_c); ELSE vc:=0; END;
+           IF node_b > 0 THEN vb:=VectorV(node_b); ELSE vb:=0; END;
+           IF node_e > 0 THEN ve:=VectorV(node_e); ELSE ve:=0; END;
+           vbe:=vb-ve;
+           vbc:=vb-vc;
+        END;
+       
+        // Prevent exponential overflow.
+        IF vbe > 0.7  THEN vbe:=0.7;  END; //vbe:=VT*ln((ABS(ie)/Is)+1);
+        IF vbe < -0.2 THEN vbe:=-0.2; END;
+        IF vbc > 0.7  THEN vbc:=0.7;  END; //vbc:=VT*ln((ABS(ic)/Is)+1);
+        IF vbc < -0.2 THEN vbc:=-0.2; END;
+      
+        gee:=(-1.0)*(Ies/VT)*exp(vbe/VT);
+        gec:=AlphaR*(Ics/VT)*exp(vbc/VT);
+        gce:=AlphaF*(Ies/VT)*exp(vbe/VT);
+        gcc:=(-1.0)*(Ics/VT)*exp(vbc/VT);
+        
+        AddYNL(node_e, node_e, -gee);
+        AddYNL(node_e, node_c, -gec);
+        AddYNL(node_e, node_b, gee+gec);
+        AddYNL(node_c, node_c, -gcc);
+        AddYNL(node_c, node_e, -gce);
+        AddYNL(node_c, node_b, gce+gcc);
+        AddYNL(node_b, node_b, -(gee+gec+gce+gcc) );
+        AddYNL(node_b, node_e, gee+gce);
+        AddYNL(node_b, node_c, gec+gcc);
+        
+        ie:=(-1.0)*Ies*(exp(vbe/VT)-1)+AlphaR*Ics*(exp(vbc/VT)-1);
+        ic:=AlphaF*Ies*(exp(vbe/VT)-1)-Ics*(exp(vbc/VT)-1);
+        
+        Ieq:=ie-gee*vbe-gec*vbc;
+        Icq:=ic-gce*vbe-gcc*vbc;
+        
+        AddINL(node_e, -Ieq);
+        AddINL(node_c, -Icq);
+        AddINL(node_b, Ieq+Icq);
+        
+        NPN(k, 9):=ie;
+        NPN(k, 10):=ic;
+     END;
+
+     // Ebers-Moll model for PNP BJT. Similar to the model for the NPN but notice the sign changes
+     // both in the partial derivatives and the stamped values in the Y matrix.
+     FOR k FROM 1 TO SIZE(PNP) DO
+        LOCAL vc, vb, ve, veb, vcb;
+        LOCAL ie, ic, AlphaF, AlphaR, BetaF, BetaR, Ics, Ies;
+        LOCAL gee, gec, gce, gcc;
+        LOCAL Ieq, Icq;
+        LOCAL Is, VA;
+        
+        // Fetch the NPN information
+        node_e:=PNP(k, 2);
+        node_b:=PNP(k, 3);
+        node_c:=PNP(k, 4);
+        Is:=PNP(k, 5);
+        BetaF:=PNP(k, 6);
+        BetaR:=PNP(k, 7);
+        VA:=PNP(k, 8);
+        ie:=PNP(k, 9);
+        ic:=PNP(k, 10);
+        
+        AlphaF:=BetaF/(BetaF+1);
+        AlphaR:=BetaR/(BetaR+1);
+        
+        Ics:=Is/AlphaR;
+        Ies:=Is/AlphaF;
+
+        // Get veb and vcb
+        IF j==1 THEN // For the first iteration use a guess of veb and vcb
+           veb:=0.6;
+           vcb:=-0.2;
+        ELSE
+           IF node_c > 0 THEN vc:=VectorV(node_c); ELSE vc:=0; END;
+           IF node_b > 0 THEN vb:=VectorV(node_b); ELSE vb:=0; END;
+           IF node_e > 0 THEN ve:=VectorV(node_e); ELSE ve:=0; END;
+           veb:=ve-vb;
+           vcb:=vc-vb;
+        END;
+        
+        // Prevent exponential overflow.
+        IF veb > 1.0 THEN veb:=1.0; END;
+        IF veb < -0.4 THEN veb:=-0.4; END;
+        IF vcb > 1.0 THEN vcb:=1.0; END; 
+        IF vcb < -0.4 THEN vcb:=-0.4; END;
+      
+        gee:=(Ies/VT)*exp(veb/VT);
+        gec:=(-1.0)*AlphaR*(Ics/VT)*exp(vcb/VT);
+        gce:=(-1.0)*AlphaF*(Ies/VT)*exp(veb/VT);
+        gcc:=(Ics/VT)*exp(vcb/VT);
+                                            
+        AddYNL(node_e, node_e,gee);
+        AddYNL(node_e, node_c,gec);
+        AddYNL(node_e, node_b,-(gee+gec));
+        AddYNL(node_c, node_c,gcc);
+        AddYNL(node_c, node_e,gce);
+        AddYNL(node_c, node_b,-(gce+gcc));
+        AddYNL(node_b, node_b, gee+gec+gce+gcc);
+        AddYNL(node_b, node_e,-(gee+gce));
+        AddYNL(node_b, node_c,-(gec+gcc));
+        
+        ie:=Ies*(exp(veb/VT)-1)-AlphaR*Ics*(exp(vcb/VT)-1);
+        ic:=(-1.0)*AlphaF*Ies*(exp(veb/VT)-1)+Ics*(exp(vcb/VT)-1);
+        
+        Ieq:=ie-gee*veb-gec*vcb;
+        Icq:=ic-gce*veb-gcc*vcb;
+        
+        AddINL(node_e,-Ieq);
+        AddINL(node_c,-Icq);
+        AddINL(node_b, Ieq+Icq);
+               
+        PNP(k, 9):=ie;
+        PNP(k, 10):=ic;
+     END;
+
+     // Add the contribution of MOSFETS.  Follow the method from "Electronic Circuit & System Simulation
+     // Methods" p.p. 303-305.
+     FOR k FROM 1 TO SIZE(NMOS) DO
+        LOCAL vd, vg, vs, VA, vt;
+        LOCAL vds, vgs, ids, gds, Io, gm, knwl;
+       
+        // Fetch the NMOS information
+        node_d:=NMOS(k, 2);
+        node_g:=NMOS(k, 3);
+        node_s:=NMOS(k, 4);
+        vt:=NMOS(k, 5);
+        knwl:=NMOS(k, 6);
+        VA:=NMOS(k, 7);
+        
+        IF j==1 THEN // First guess to start iterating
+           vds:=0;
+           vgs:=ABS(100*vt);
+        ELSE
+           IF node_d > 0 THEN vd:=VectorV(node_d); ELSE vd:=0; END;
+           IF node_g > 0 THEN vg:=VectorV(node_g); ELSE vg:=0; END;
+           IF node_s > 0 THEN vs:=VectorV(node_s); ELSE vs:=0; END;
+           vds:=vd-vs;
+           vgs:=vg-vs;
+        END;
+        NMOS(k, 8):=vgs; // Used during AC analysis to compute gm
+      
+        IF vds>=0 THEN
+           IF vgs>vt THEN
+              IF vds <= (vgs-vt) THEN // Triode
+                 ids:=knwl*(((vgs-vt)*vds)-((vds^2)/2));           
+                 gds:=knwl*(vgs-vt-vds);
+                 gm:=knwl*vds;
+                 Io:=ids-gm*vgs-gds*vds;
+              ELSE // Saturation
+                 ids:=(knwl/2)*((vgs-vt)^2);
+                 IF VA < 1e6 THEN
+                    gds:=ids/VA; // James Early voltage contribution
+                 ELSE
+                    gds:=0;
+                 END;
+                 gm:=knwl*(vgs-vt);
+                 Io:=ids-gm*vgs;
+              END;
+              // Add the voltage dependant current source to MatrixY_NL using MNA VCT
+              // As described in fig. 4.4.1 of "Computer Methods for Circuit Analysis
+              // and Design".
+              AddYNL(node_d, node_g, gm);
+              AddYNL(node_d, node_s,-gm);
+              AddYNL(node_s, node_g,-gm);
+              AddYNL(node_s, node_s, gm);
+           ELSE // Cutoff
+              Io:=0;
+              gds:=0;
+           END;       
+        ELSE // No drain-source reversal for now (code is in simul.040.txt, but it doesn't work all the time)
+           Io:=0;
+           gds:=0;
+        END;
+      
+        AddINL(node_s, Io);
+        AddINL(node_d,-Io);
+        
+        // This very large resistor is to prevent singular matrices when the transistor is cut-off
+        IF gds<1e-9 THEN gds:=1e-9; END;
+        
+        AddYNL(node_d, node_d, gds);
+        AddYNL(node_s, node_s, gds);
+        AddYNL(node_d, node_s,-gds);
+        AddYNL(node_s, node_d,-gds);
+     END;
+     
+     FOR k FROM 1 TO SIZE(PMOS) DO
+        LOCAL vd, vg, vs, VA, vt;
+        LOCAL vsd, vsg, isd, gsd, Io, gm, kpwl;
+    
+        // Fetch the PMOS information
+        node_s:=PMOS(k, 2);
+        node_g:=PMOS(k, 3);
+        node_d:=PMOS(k, 4);
+        vt:=PMOS(k, 5);
+        kpwl:=PMOS(k, 6);
+        VA:=PMOS(k, 7);
+        
+        IF j==1 THEN // First guess to start iterating
+           vsd:=0;
+           vsg:=100*vt;
+        ELSE
+           IF node_d > 0 THEN vd:=VectorV(node_d); ELSE vd:=0; END;
+           IF node_g > 0 THEN vg:=VectorV(node_g); ELSE vg:=0; END;
+           IF node_s > 0 THEN vs:=VectorV(node_s); ELSE vs:=0; END;
+           vsd:=vs-vd;
+           vsg:=vs-vg;
+        END;
+        
+        PMOS(k, 8):=vsg; // Used during AC analysis to compute gm
+        
+        IF vsd>=0 THEN
+           IF vsg>vt THEN
+              IF vsd <= (vsg-vt) THEN // Triode
+                 isd:=kpwl*(((vsg-vt)*vsd)-((vsd^2)/2));           
+                 gsd:=kpwl*(vsg-vt-vsd);
+                 gm:=kpwl*vsd;
+                 Io:=isd-gm*vsg-gsd*vsd;
+              ELSE // Saturation
+                 isd:=(kpwl/2)*((vsg-vt)^2);
+                 IF VA < 1e6 THEN
+                    gsd:=isd/VA; // James Early voltage contribution
+                 ELSE
+                    gsd:=0;
+                 END;
+                 gm:=kpwl*(vsg-vt);
+                 Io:=isd-gm*vsg;
+              END;
+
+              // Add the voltage dependant current source to MatrixY_NL using MNA VCT
+              // As described in fig. 4.4.1 of "Computer Methods for Circuit Analysis
+              // and Design".
+              // Notice that the contributions have the same signs as the NMOS case above.
+              AddYNL(node_d, node_g, gm);
+              AddYNL(node_d, node_s,-gm);
+              AddYNL(node_s, node_g,-gm);
+              AddYNL(node_s, node_s, gm);
+           ELSE // Cutoff
+              Io:=0;
+              gsd:=0;
+           END;       
+        ELSE // No drain-source reversal for now (code is in beta 0.40, but it doesn't work all the time)
+           Io:=0;
+           gsd:=0;
+        END;
+    
+        //Notice that Io is pointing in the oposite direction of the NMOS source            
+        AddINL(node_s,-Io);
+        AddINL(node_d, Io);
+        
+        // This very large resistor is to prevent singular matrices when the transistor is cut-off
+        IF gsd<1e-9 THEN gsd:=1e-9; END;
+        
+        AddYNL(node_d, node_d, gsd);
+        AddYNL(node_s, node_s, gsd);
+        AddYNL(node_d, node_s,-gsd);
+        AddYNL(node_s, node_d,-gsd);
+     END;
+     
+     // Solve
+     IFERR VectorV:=inv(MatrixY_NL)*VectorI_NL THEN
+        My_PRINT("ERROR: Can not solve circuit.", 1);
+        My_PRINT("Y="+MatrixY_NL, 1);
+        M0:=MatrixY_NL;
+        My_Term();
+        RETURN;
+     END;
+     
+     // Compare with previous result.  If change is small then stop.
+     // Maybe here we should see the percentage of change instead of an absolute value?
+     good_enough:=1;
+     Current_Max_Error:=0;
+     FOR k FROM 1 to Node_count DO // For now only compare the voltages
+        IF ABS(VectorV(k)-VectorV_NL(k)) > Current_Max_Error THEN Current_Max_Error:=ABS(VectorV(k)-VectorV_NL(k)); END;
+        IF ABS(VectorV(k)-VectorV_NL(k)) > Max_Error THEN good_enough:=0; END;
+     END;
+
+     IF good_enough==1 AND j> 1 THEN BREAK; ELSE VectorV_NL:=VectorV; END;       
+   END;
+
+   My_PRINT("Iterations: " + R2I(j-1), 1);
+   My_PRINT("Max error: " + Current_Max_Error, 1);
+   My_PRINT("Solution time: " + R2I(TICKS()-Ticks1) + " ms", 1 );
+   My_PRINT("V: " + VectorV, 1);
+
+   // Recover the base current of the simplified active BJTs in case it is required for AC analysis
+   FOR k FROM 1 TO SIZE(ANPN) DO
+      ANPN(k,9):=VectorV(ANPN(k,8));
+   END;
+   FOR k FROM 1 TO SIZE(APNP) DO
+      APNP(k,9):=VectorV(APNP(k,8));
+   END;
+
+   LOCAL Vk, Vm, Ikm;
+
+   // Put the results somewhere
+   FOR j FROM 1 TO SIZE(Items) STEP 1 DO
+      IF Items(j,1)=="N" THEN
+         IF Items(j+1,10)>0 THEN
+            Items(j+3,9):=STRING(VectorV(Items(j+1,10)), DC_Mode, DC_Precision);
+         ELSE
+            Items(j+3,9):=STRING(0, DC_Mode, DC_Precision); // Voltage at node 0 is 0V
+         END;
+      END;
+      
+      IF Items(j,1)=="MetV" THEN
+         Vk:=0;
+         Vm:=0;
+         IF Items(j+1,10)>0 THEN Vk:=VectorV(Items(j+1,10)); END;
+         IF Items(j+2,10)>0 THEN Vm:=VectorV(Items(j+2,10)); END;
+         Items(j+4,9):=STRING(Vk-Vm, DC_Mode, DC_Precision);
+      END;
+
+      IF Items(j,1)=="SC" THEN
+         FOR k FROM 1 TO SIZE(SC) STEP 1 DO
+            IF SC(k,1)==j THEN // Reached our short circuit
+               Ikm:=VectorV(SC(k,4));
+               Items(j+4,9):=STRING(Ikm*-1.0, DC_Mode, DC_Precision); // The solution give the current from + to -.  I wan't it form - to +.
+            END;
+         END;
+      END;
+
+      IF Items(j,1)=="R3" THEN
+          LOCAL Pkm;
+          Vk:=0;
+          Vm:=0;
+          IF Items(j+1,10)>0 THEN Vk:=VectorV(Items(j+1,10)); END;
+          IF Items(j+2,10)>0 THEN Vm:=VectorV(Items(j+2,10)); END;
+          // Update the voltage
+          Items(j+5,9):=STRING(Vk-Vm, DC_Mode, DC_Precision);
+          // Update the current
+          Ikm:=(Vk-Vm)/S2C(Items(j+4,9));
+          Items(j+6,9):=STRING(Ikm, DC_Mode, DC_Precision);
+          // Update the power
+          Pkm:=(Vk-Vm)*Ikm;
+          Items(j+7,9):=STRING(Pkm, DC_Mode, DC_Precision);
+      END;
+      
+      IF Items(j,1)=="MetA" THEN
+         // Look for the reference to the component we want the current from
+         FOR k FROM 1 TO SIZE(Items) STEP 1 DO
+
+            IF Items(k,1)=="R" OR Items(k,1)=="R2" OR Items(k,1)=="R3" THEN
+               IF Items(j+2,9)==Items(k+3,9) THEN // is xRef equal to Ref?
+                  Vk:=0;
+                  Vm:=0;
+                  IF Items(k+1,10)>0 THEN Vk:=VectorV(Items(k+1,10)); END;
+                  IF Items(k+2,10)>0 THEN Vm:=VectorV(Items(k+2,10)); END;
+                  Ikm:=(Vk-Vm)/S2R(Items(k+4,9));
+                  Items(j+3,9):=STRING(Ikm, DC_Mode, DC_Precision);
+               END;
+            END;
+
+            IF Items(k,1)=="V" THEN
+               IF Items(j+2,9)==Items(k+3,9) THEN // is xRef equal to Ref?
+                  LOCAL kk;
+                  FOR kk FROM 1 TO SIZE(Vdc) STEP 1 DO
+                     IF Vdc(kk, 1) == k THEN
+                        Ikm:=VectorV(Vdc(kk,5));
+                        Items(j+3,9):=STRING(Ikm*-1.0, DC_Mode, DC_Precision); // The solution give the current from + to -.  I wan't it form - to +.
+                     END;
+                  END;
+               END;
+            END;
+
+            IF Items(k,1)=="D" OR Items(k,1)=="Z"  OR Items(k,1)=="LED" THEN
+               LOCAL vd, Is, n;
+               LOCAL VZt, IZt, rz, VZo;
+               IF Items(j+2,9)==Items(k+3,9) THEN // is xRef equal to Ref?
+                  Vk:=0;
+                  Vm:=0;
+                  IF Items(k+1,10)>0 THEN Vk:=VectorV(Items(k+1,10)); END;
+                  IF Items(k+2,10)>0 THEN Vm:=VectorV(Items(k+2,10)); END;
+                  vd:=Vk-Vm;
+                   
+                  Is:= S2R(Items(k+4,9));
+                  n:=  S2R(Items(k+5,9));
+                  IF Items(k,1)=="Z" THEN
+                     VZt:=S2R(Items(k+6,9));
+                     IZt:=S2R(Items(k+7,9));
+                     rz:= S2R(Items(k+8,9));
+                     VZo:=-1.0*(VZt-rz*IZt);
+                  
+                     IF vd > VZo THEN
+                        Ikm:=Is*(exp(vd/(n*VT))-1);
+                     ELSE
+                        Ikm:=(vd-VZo)/rz;
+                     END;
+                  ELSE
+                     Ikm:=Is*(exp(vd/(n*VT))-1);
+                  END;
+                  Items(j+3,9):=STRING(Ikm, DC_Mode, DC_Precision);
+               END;
+            END;
+
+         END;
+      END;
+   END;
+   
+   My_PRINT("DC solution complete.", 1);
+   IF showterm==1 THEN My_Term(); END;
+END;
+
+LOCAL Print_PI_Par(n, gm, rpi, ro)
+BEGIN
+   LOCAL strout;
+   
+   strout:=Items(n+4,9)+", gm="+gm;
+   IF rpi<>0 THEN strout:=strout+", rpi="+rpi; END;
+   IF ro<1e7 THEN strout:=strout+", ro="+ro; END;
+   My_PRINT(strout, 1);
+END;      
+
+LOCAL ADD_Hybrid_PI_Y(nvk, nvm, nik, nim, gm, rpi, ro)
+BEGIN
+   // Add VCCS
+   AddY(nik,nvk, gm);
+   AddY(nik,nvm,-gm);
+   AddY(nim,nvk,-gm);
+   AddY(nim,nvm, gm);
+   IF rpi > 0 THEN
+      AddY(nvk,nvk, 1/rpi);
+      AddY(nvm,nvm, 1/rpi);
+      AddY(nvk,nvm,-1/rpi);
+      AddY(nvm,nvk,-1/rpi);
+   END;
+   IF ro > 0 THEN
+      AddY(nik,nik, 1/ro);
+      AddY(nim,nim, 1/ro);
+      AddY(nik,nim,-1/ro);
+      AddY(nim,nik,-1/ro);
+   END;   
+END; 
+
+LOCAL AC_Solve()
+BEGIN
+   LOCAL j, k, m;
+   LOCAL Ticks1, Ticks2;
+   LOCAL node_k, node_m; // For diodes
+   LOCAL node_c, node_b, node_e; // For BJTs
+   LOCAL node_g, node_d, node_s; // For MOSFETS
+   LOCAL DidDC:=0;
+
+   // Check if there are any elements that need a DC solution first:
+   FOR j FROM 1 TO SIZE(Items) STEP 1 DO
+      IF Items(j,1)=="D" OR Items(j,1)=="Z"  OR Items(j,1)=="LED" OR
+         Items(j,1)=="NPN"  OR Items(j,1)=="PNP" OR
+         Items(j,1)=="ANPN" OR Items(j,1)=="APNP" OR
+         Items(j,1)=="NMOS" OR Items(j,1)=="PMOS" THEN
+         DC_Solve(0); // Solve without opening the terminal
+         DidDC:=1;
+         BREAK;
+      END;
+   END;
+   
+   IF DidDC==0 THEN
+      Node_count:=Create_Netlist();
+      Load_Components(); // Load the circuit component lists.
+   END;
+   
+   IF Node_count<1 THEN
+     My_PRINT("ERROR: Netlist creation failed!", 1);
+     My_Term();
+     RETURN;
+   END;
+
+   My_PRINT("AC solution start...", 1);
+
+   Extra_count:=0;
+   // Account for MNA components.  They increase the dimensions of the Y matrix by 1 or 2.
+   Extra_count:=Extra_count+SIZE(Vdc);    // DC Voltage source (as a closed switch)
+   Extra_count:=Extra_count+SIZE(Idc);    // DC Current source (as an open switch)
+   Extra_count:=Extra_count+SIZE(OpAmps); // OpAmp
+   Extra_count:=Extra_count+SIZE(Vac);    // AC voltage source
+   Extra_count:=Extra_count+SIZE(VCVS);   // Voltage controlled voltage source
+   Extra_count:=Extra_count+SIZE(CCCS);   // Current controlled current source
+   Extra_count:=Extra_count+SIZE(CCVS)*2; // Current controlled voltage source
+   Extra_count:=Extra_count+SIZE(IDTR);   // Ideal transformer
+   IF IdealLC<>0 THEN
+      Extra_count:=Extra_count+SIZE(Ind); // Inductors as open switches
+      Extra_count:=Extra_count+SIZE(Cap); // Capacitors as closed switches
+   END;
+   Extra_count:=Extra_count+SIZE(SC);     // Short Circuits
+
+   // Create matrix of impedances and the vector of state variables and independent sources:
+   MatrixY:=MAKEMAT(0,Node_count+Extra_count,Node_count+Extra_count);
+   VectorI:=MAKEMAT(0,Node_count+Extra_count);
+   VectorV:=MAKEMAT(0,Node_count+Extra_count);
+   Extra_count:=0;
+
+   // Fill the matrix Y.
+   
+   // Add the Resistors
+   Add_Resistors();
+   
+   // Add AC current sources
+   FOR k FROM 1 to SIZE(Iac) DO
+      LOCAL nk, nm, Mag, r;
+      nk:=Iac(k, 2);
+      nm:=Iac(k, 3);
+      Mag:=Iac(k, 4);
+      r:=Iac(k, 5);
+      // Add internal resistance to matrix
+      IF r>0 THEN
+         AddY(nk,nk,1.0/r);
+         AddY(nm,nm,1.0/r);
+         AddY(nk,nm,-1.0/r);
+         AddY(nm,nk,-1.0/r);
+      END;
+      // Add to vector of sources
+      AddI(nk,Mag); // For NOW
+      AddI(nm,-Mag);
+   END;
+   
+   // Impedances 
+   FOR k FROM 1 to SIZE(Imp) DO
+      LOCAL nk, nm, z;
+
+      nk:=Imp(k, 2);
+      nm:=Imp(k, 3);
+      z:=Imp(k, 4);
+      
+      IF ABS(z)==0 THEN
+         z:=1e-12; // prevent division by zero
+      END;
+      AddY(nk,nk,1/z);
+      AddY(nm,nm,1/z);
+      AddY(nk,nm,-1/z);
+      AddY(nm,nk,-1/z);
+   END;
+
+   // AC voltage sources
+   FOR k FROM 1 to SIZE(Vac) DO
+      LOCAL nk, nm, v, en;
+      Extra_count:=Extra_count+1;
+      en:=Node_count+Extra_count;
+      nk:=Vac(k,2);
+      nm:=Vac(k,3);
+      v:=Vac(k,4);
+      Vac(k,5):=en; // The position in the vector of solutions where to find the source current
+      VectorI(en):=v;
+      AddY(nk,en,1);
+      AddY(en,nk,1);
+      AddY(nm,en,-1);
+      AddY(en,nm,-1);
+   END;
+
+   // Short Circuits as 0V voltage sources
+   FOR k FROM 1 to SIZE(SC) DO
+      LOCAL nk, nm, v, en;
+      Extra_count:=Extra_count+1;
+      en:=Node_count+Extra_count;
+      nk:=SC(k,2);
+      nm:=SC(k,3);
+      SC(k,4):=en;
+      VectorI(en):=0;
+      AddY(nk,en,1);
+      AddY(en,nk,1);
+      AddY(nm,en,-1);
+      AddY(en,nm,-1);
+   END;
+      
+   // Add MNA device common to AC and DC anaylsis
+   Add_Common_MNA();
+
+   // Inductors 
+   FOR k FROM 1 to SIZE(Ind) DO
+      LOCAL nk, nm, z, L;
+
+      nk:=Ind(k, 2);
+      nm:=Ind(k, 3);
+      L:=Ind(k, 4);
+      
+      IF IdealLC<>0 THEN // Replace inductor with open switch
+         AddSWY(nk, nm, 0);
+      ELSE // Use the complex impedance at 'Frequency'
+         z:=(0,2*PI()*Frequency*L);
+         AddY(nk,nk,1/z);
+         AddY(nm,nm,1/z);
+         AddY(nk,nm,-1/z);
+         AddY(nm,nk,-1/z);
+      END;
+   END;
+      
+   // Add Capacitors
+   FOR k FROM 1 TO SIZE(Cap) DO
+      LOCAL nk, nm, en, C, z;
+
+      nk:=Cap(k,2);
+      nm:=Cap(k,3);
+      C:=Cap(k,4);
+
+      IF IdealLC<>0 THEN // Replace capacitor with closed switch
+         AddSWY(nk, nm, 1);
+      ELSE // Use the complex impedance at 'Frequency'
+         z:=(0,-1/(2*PI()*Frequency*C));
+         AddY(nk,nk,1/z);
+         AddY(nm,nm,1/z);
+         AddY(nk,nm,-1/z);
+         AddY(nm,nk,-1/z);
+      END;
+   END;
+
+   // Add DC voltage sources as closed switches
+   FOR k FROM 1 TO SIZE(Vdc) DO
+      LOCAL nk, nm;
+      nk:=Vdc(k,2);
+      nm:=Vdc(k,3);
+      AddSWY(nk, nm, 1);
+   END;
+
+   // DC current sources are replaced with open switches 
+   FOR k FROM 1 to SIZE(Idc) DO
+      LOCAL nk, nm, r;
+      nk:=Idc(k, 2);
+      nm:=Idc(k, 3);
+      AddSWY(nk, nm, 0);
+   END;
+
+   // Add linearized diodes, zeners, LEDs, BJTs (NPN and PNP, also simple active NPN and PNP), and MOSFETS (NMOS and PMOS)
+
+   // Add the contribution of diodes, LEDs, and Zeners.
+   FOR k FROM 1 TO SIZE(Diodes) DO
+      LOCAL nk, nm, gd;
+
+      // Fetch the diode information
+      nk:=Diodes(k, 2);
+      nm:=Diodes(k, 3);
+      gd:=Diodes(k, 9); // Calculated with DC_Solve()
+      
+      My_PRINT(Items(Diodes(k, 1)+3,9)+", rd="+1/gd, 1);
+
+      AddY(nk, nk,gd);
+      AddY(nm, nm,gd);
+      AddY(nk, nm,-gd);
+      AddY(nm, nk,-gd);
+   END;
+
+   // Add the contribution of NPN BJTs
+   FOR k FROM 1 TO SIZE(NPN) DO
+      LOCAL nc, nb, ne, ic, BetaF, VA;
+      LOCAL gm, rpi, ro;
+      
+      // Fetch the NPN information
+      nc:=NPN(k, 2);
+      nb:=NPN(k, 3);
+      ne:=NPN(k, 4);
+      BetaF:=NPN(k, 6);
+      VA:=NPN(k, 8);
+      ic:=NPN(k, 10); // Calculated with DC_Solve()
+      
+      // Calculate hybrid pi parameters  
+      gm:=ic/VT;
+      rpi:=BetaF/gm;
+      ro:=VA/ic;
+      
+      Print_PI_Par(NPN(k, 1), gm, rpi, ro);
+        
+      ADD_Hybrid_PI_Y(nb, ne, nc, ne, gm, rpi, ro); 
+   END;
+
+   // Add the contribution of the simplified active NPN BJTs
+   FOR k FROM 1 TO SIZE(ANPN) DO
+      LOCAL nc, nb, ne, ib, ic, Beta, VA;
+      LOCAL gm, rpi, ro;
+      
+      // Fetch the NPN information
+      nc:=ANPN(k, 2);
+      nb:=ANPN(k, 3);
+      ne:=ANPN(k, 4);
+      Beta:=ANPN(k, 6);
+      VA:=ANPN(k, 7);
+      ib:=ANPN(k, 9); // Calculated with DC_Solve()
+      
+      // Calculate hybrid pi parameters
+      ic:=Beta*ib;  
+      gm:=ic/VT;
+      rpi:=Beta/gm;
+      ro:=VA/ic;
+
+      Print_PI_Par(ANPN(k, 1), gm, rpi, ro);
+        
+      ADD_Hybrid_PI_Y(nb, ne, nc, ne, gm, rpi, ro); 
+   END;
+
+   // Add the contribution of PNP BJTs
+   FOR k FROM 1 TO SIZE(PNP) DO
+      LOCAL nc, nb, ne, ic, BetaF, VA;
+      LOCAL gm, rpi, ro;
+      
+      // Fetch the NPN information
+      ne:=PNP(k, 2);
+      nb:=PNP(k, 3);
+      nc:=PNP(k, 4);
+      BetaF:=PNP(k, 6);
+      VA:=PNP(k, 8);
+      ic:=PNP(k, 10); // Calculated with DC_Solve().  Direction is pointing in.
+      
+      // Calculate hybrid pi parameters.  It turns out that the model is the same
+      // as for the NPN because the voltage at rpi is negative and the transconductance
+      // current source is pointing now from emitter to colector.  They cancel each other. 
+      gm:=ABS(ic)/VT; // ic is defined pointing into the PNP, therefore in the active region is negative
+      rpi:=BetaF/gm;
+      ro:=VA/ABS(ic);
+      Print_PI_Par(PNP(k, 1), gm, rpi, ro);
+        
+      ADD_Hybrid_PI_Y(nb, ne, nc, ne, gm, rpi, ro); 
+   END;
+
+   // Add the contribution of the simplified active PNP BJTs
+   FOR k FROM 1 TO SIZE(APNP) DO
+      LOCAL nc, nb, ne, ib, ic, Beta, VA;
+      LOCAL gm, rpi, ro;
+      
+      // Fetch the NPN information
+      ne:=APNP(k, 2);
+      nb:=APNP(k, 3);
+      nc:=APNP(k, 4);
+      Beta:=APNP(k, 6);
+      VA:=APNP(k, 7);
+      ib:=APNP(k, 9); // Calculated with DC_Solve()
+      
+      // Calculate hybrid pi parameters
+      ic:=Beta*ib;  
+      gm:=ic/VT;
+      rpi:=Beta/gm;
+      ro:=VA/ic;
+      Print_PI_Par(APNP(k, 1), gm, rpi, ro);
+
+      ADD_Hybrid_PI_Y(nb, ne, nc, ne, gm, rpi, ro); 
+   END;
+
+   // Add the contribution of NMOS transistors
+   FOR k FROM 1 TO SIZE(NMOS) DO
+      LOCAL nd, ng, ns;
+      LOCAL VA, vt, vgs, ro, gm, knwl;
+       
+      // Fetch the NMOS information
+      nd:=NMOS(k, 2);
+      ng:=NMOS(k, 3);
+      ns:=NMOS(k, 4);
+      vt:=NMOS(k, 5);
+      knwl:=NMOS(k, 6);
+      VA:=NMOS(k, 7);
+      vgs:=NMOS(k, 8); // Calculated with DC_Solve()
+      
+      gm:=knwl*(vgs-vt);
+      IFERR ro:=ABS(VA)/(0.5*knwl*(vgs-vt)^2); THEN ro:=0; END;
+        
+      Print_PI_Par(NMOS(k, 1), gm, 0, ro);
+
+      ADD_Hybrid_PI_Y(ng, ns, nd, ns, gm, 0, ro); 
+   END;
+
+   // Add the contribution of PMOS transistors
+   FOR k FROM 1 TO SIZE(PMOS) DO
+      LOCAL nd, ng, ns;
+      LOCAL VA, vt, vsg, ro, gm, kpwl;
+       
+      // Fetch the PMOS information
+      ns:=PMOS(k, 2);
+      ng:=PMOS(k, 3);
+      nd:=PMOS(k, 4);
+      vt:=PMOS(k, 5);
+      kpwl:=PMOS(k, 6);
+      VA:=PMOS(k, 7);
+      vsg:=PMOS(k, 8); // Calculated with DC_Solve()
+      
+      gm:=kpwl*ABS(vsg-vt);
+      IFERR ro:=ABS(VA)/(0.5*kpwl*(vsg-vt)^2); THEN ro:=0; END;
+        
+      Print_PI_Par(PMOS(k, 1), gm, 0, ro);
+
+      ADD_Hybrid_PI_Y(ng, ns, nd, ns, gm, 0, ro); 
+   END;
+   
+   //My_PRINT("MatrixY: " + MatrixY, 1);
+   //My_PRINT("VectorI: " + VectorI, 1);
+   
+   Ticks1:=TICKS();
+
+   // Solve
+   IFERR VectorV:=inv(MatrixY)*VectorI THEN
+      My_PRINT("ERROR: Can not solve circuit.", 1);
+      My_PRINT("Y="+MatrixY, 1);
+      M1:=MatrixY;
+      My_Term();
+      RETURN;
+   END;
+     
+   My_PRINT("Solution time: " + R2I(TICKS()-Ticks1) + " ms", 1 );
+   My_PRINT("V: " + VectorV, 1);
+
+   LOCAL Vk, Vm, Ikm;
+
+   // Put the results somewhere
+   FOR j FROM 1 TO SIZE(Items) STEP 1 DO
+      IF Items(j,1)=="N" THEN
+         IF Items(j+1,10)>0 THEN
+            IF TYPE(VectorV(Items(j+1,10)))==3 THEN
+               // Older versions of the ROM fail here
+               Items(j+3,9):=STRING(ABS(VectorV(Items(j+1,10))), AC_Mode, AC_Precision) + CHAR(8737) + STRING(ARG(VectorV(Items(j+1,10))), AC_Mode, AC_Precision);
+            ELSE
+               Items(j+3,9):=STRING(VectorV(Items(j+1,10)), AC_Mode, AC_Precision); 
+            END;
+         ELSE
+            Items(j+3,9):=STRING(0); // Voltage at node 0 is 0V
+         END;
+      END;
+      
+      IF Items(j,1)=="MetV" THEN
+         Vk:=0;
+         Vm:=0;
+         IF Items(j+1,10)>0 THEN Vk:=VectorV(Items(j+1,10)); END;
+         IF Items(j+2,10)>0 THEN Vm:=VectorV(Items(j+2,10)); END;
+         IF TYPE(Vk)==3 OR TYPE(Vm)==3 THEN
+            Items(j+4,9):=STRING(ABS(Vk-Vm), AC_Mode, AC_Precision) + CHAR(8737) + STRING(ARG(Vk-Vm), AC_Mode, AC_Precision);
+         ELSE
+            Items(j+4,9):=STRING(Vk-Vm, AC_Mode, AC_Precision);
+         END;
+      END;
+
+      IF Items(j,1)=="SC" THEN
+         FOR k FROM 1 TO SIZE(SC) STEP 1 DO
+            IF SC(k,1)==j THEN
+               Ikm:=VectorV(SC(k,4));
+               IF TYPE(Ikm)==3 THEN
+                  Items(j+4,9):=STRING(ABS(-Ikm), AC_Mode, AC_Precision) + CHAR(8737) + STRING(ARG(-Ikm), AC_Mode, AC_Precision); // The solution give the current from + to -.  I wan't it form - to +.
+               ELSE
+                  Items(j+4,9):=STRING(-Ikm, AC_Mode, AC_Precision);
+               END;
+            END;
+         END;
+      END;
+
+      IF Items(j,1)=="R3" THEN
+          LOCAL Pkm;
+          Vk:=0;
+          Vm:=0;
+          IF Items(j+1,10)>0 THEN Vk:=VectorV(Items(j+1,10)); END;
+          IF Items(j+2,10)>0 THEN Vm:=VectorV(Items(j+2,10)); END;
+          // Update the voltage
+          IF TYPE(Vk)==3 OR TYPE(Vm)==3 THEN
+             Items(j+5,9):=STRING(ABS(Vk-Vm), AC_Mode, AC_Precision) + CHAR(8737) + STRING(ARG(Vk-Vm), AC_Mode, AC_Precision);
+          ELSE
+             Items(j+5,9):=STRING(Vk-Vm, AC_Mode, AC_Precision);
+          END;
+          // Update the current
+          Ikm:=(Vk-Vm)/S2C(Items(j+4,9));
+          IF TYPE(Ikm)==3 THEN
+             Items(j+6,9):=STRING(ABS(Ikm), AC_Mode, AC_Precision) + CHAR(8737) + STRING(ARG(Ikm), AC_Mode, AC_Precision);
+          ELSE
+             Items(j+6,9):=STRING(Ikm, AC_Mode, AC_Precision);
+          END;
+          // Update the power
+          Pkm:=(Vk-Vm)*Ikm;
+          IF TYPE(Pkm)==3 THEN
+             Items(j+7,9):=STRING(ABS(Pkm), AC_Mode, AC_Precision) + CHAR(8737) + STRING(ARG(Pkm), AC_Mode, AC_Precision);
+          ELSE
+             Items(j+7,9):=STRING(Pkm, AC_Mode, AC_Precision);
+          END;
+      END;
+      
+      IF Items(j,1)=="MetA" THEN
+         // Look for the reference to the component we want the current from
+         FOR k FROM 1 TO SIZE(Items) STEP 1 DO
+            IF Items(k,1)=="R" OR Items(k,1)=="R2" OR Items(k,1)=="R3" OR Items(k,1)=="IMP" THEN
+               IF Items(j+2,9)==Items(k+3,9) THEN // is xRef equal to Ref?
+                  Vk:=0;
+                  Vm:=0;
+                  IF Items(k+1,10)>0 THEN Vk:=VectorV(Items(k+1,10)); END;
+                  IF Items(k+2,10)>0 THEN Vm:=VectorV(Items(k+2,10)); END;
+                  Ikm:=(Vk-Vm)/S2C(Items(k+4,9));
+                  IF TYPE(Ikm)==3 THEN
+                     Items(j+3,9):=STRING(ABS(Ikm), AC_Mode, AC_Precision) + CHAR(8737) + STRING(ARG(Ikm), AC_Mode, AC_Precision);
+                  ELSE
+                     Items(j+3,9):=STRING(Ikm, AC_Mode, AC_Precision);
+                  END;
+               END;
+            END;
+
+            IF Items(k,1)=="VAC" THEN
+               IF Items(j+2,9)==Items(k+3,9) THEN // is xRef equal to Ref?
+                  LOCAL kk;
+                  FOR kk FROM 1 TO SIZE(Vac) STEP 1 DO
+                     IF Vac(kk, 1) == k THEN
+                        Ikm:=VectorV(Vac(kk,5));
+                        IF TYPE(Ikm)==3 THEN
+                           Items(j+3,9):=STRING(ABS(-Ikm), AC_Mode, AC_Precision) + CHAR(8737) + STRING(ARG(-Ikm), AC_Mode, AC_Precision); // The solution give the current from + to -.  I wan't it form - to +.
+                        ELSE
+                           Items(j+3,9):=STRING(-Ikm, AC_Mode, AC_Precision);
+                        END;
+                     END;
+                  END;
+               END;
+            END;
+
+            IF Items(k,1)=="D" OR Items(k,1)=="Z" OR Items(k,1)=="LED" THEN
+               LOCAL n, vd, rz, gd; // gd and Io are calculated at DC
+               IF Items(j+2,9)==Items(k+3,9) THEN // is xRef equal to Ref?
+                  // From the list of diodes we need to fetch the dynamic conductance
+                  FOR n FROM 1 TO SIZE(Diodes) STEP 1 DO
+                     IF Diodes(n, 1)==k THEN
+                     	rz:=Diodes(n, 8);
+                     	gd:=Diodes(n, 9);
+                     	BREAK;
+                     END;
+                  END;
+
+                  Vk:=0; Vm:=0;
+                  IF Items(k+1,10)>0 THEN Vk:=VectorV(Items(k+1,10)); END;
+                  IF Items(k+2,10)>0 THEN Vm:=VectorV(Items(k+2,10)); END;
+                  vd:=Vk-Vm;
+                  
+                  // Since we have to do DC analysis before we do AC analysis, the result field
+                  // of the current indicator has the calculated DC current.
+                  IF S2R(Items(j+3,9)) > 0 THEN // Forward bias
+                     Ikm:=gd*vd;
+                  ELSE // Reverse bias
+                     IFERR Ikm:=vd/rz THEN Ikm:=0; END;
+                  END;
+
+                  IF TYPE(Ikm)==3 THEN
+                     Items(j+3,9):=STRING(ABS(Ikm), AC_Mode, AC_Precision) + CHAR(8737) + STRING(ARG(Ikm), AC_Mode, AC_Precision);
+                  ELSE
+                     Items(j+3,9):=STRING(Ikm, AC_Mode, AC_Precision);
+                  END;
+               END;
+            END;
+         END;
+      END;
+   END;
+   
+   My_PRINT("AC solution complete.", 1);
+   My_Term();
+END;
+
+LOCAL Clear_Results()
+BEGIN
+   LOCAL j, k;
+   FOR j FROM 1 TO SIZE(Items) STEP 1 DO
+      IF Items(j,1)=="N" THEN
+         Items(j+3,9):="?.?V";
+      END;
+      IF Items(j,1)=="R3" THEN
+         Items(j+5,9):="?";
+         Items(j+6,9):="?";
+         Items(j+7,9):="?";
+      END;
+      IF Items(j,1)=="SC" THEN
+         Items(j+4,9):="?";
+      END;
+      IF Items(j,1)=="MetV" THEN
+         Items(j+4,9):="?.?V";
+      END;
+      IF Items(j,1)=="MetA" THEN
+         Items(j+3,9):="?.?A";
+         // Now, make the arrow point in the correct direction for the selected element
+         FOR k FROM 1 TO SIZE(Items) STEP 1 DO
+            IF Items(k,1)=="R" OR Items(k,1)=="R2" OR Items(k,1)=="R3" OR Items(k,1)=="D" OR Items(k,1)=="Z" OR Items(k,1)=="LED" THEN
+               IF Items(j+2,9)==Items(k+3,9) THEN // is xRef equal to Ref?
+                  IF Items(k,9)==1 THEN // Mirroed part?
+                     Items(j,7):=(Items(k,7)+270 MOD 360.0);
+                  ELSE
+                     Items(j,7):=(Items(k,7)+90 MOD 360.0);
+                  END;
+               END;
+            END;
+            IF Items(k,1)=="V" THEN
+               IF Items(j+2,9)==Items(k+3,9) THEN // is xRef equal to Ref?
+                  Items(j,7):=Items(k,7);
+               END;
+            END;
+         END;
+      END;
+   END;
+END;
+
+LOCAL Save_As()
+BEGIN
+   LOCAL NewName:="";
+   
+   LOCAL c, i, lst, inputed;
+   lst:=CONCAT("",AFiles);
+   i:=1;
+   
+   IFERR inputed:=INPUT({{NewName,[2]}, {i,lst}}, "Circuit name", {"New Name", "Existing Name"}) THEN
+      RETURN;
+   END;
+   
+   IF inputed == 1 THEN
+      IF NewName<>"" THEN
+         AFiles(NewName):=Items;
+         CircuitName:=NewName;
+      ELSE
+         IF i>1 THEN
+            AFiles(lst[i]):=Items;
+            CircuitName:=lst[i];
+         END;
+      END;
+   END;
+END;
+
+LOCAL Save()
+BEGIN
+   IF CircuitName<>"" THEN
+      AFiles(CircuitName):=Items;
+      My_MSGBOX(CircuitName + " saved.");
+   ELSE
+      Save_As();
+   END;
+END;
+
+LOCAL Is_Part(d)
+BEGIN
+   IF Items(d,1)<>"T" AND Items(d,1)<>"P" AND Items(d,1)<>"W" AND Items(d,1)<>"J" AND Items(d,1)<>Default_Items(1,1) THEN
+      RETURN 1;
+   ELSE
+      RETURN 0;
+   END;
+END;
+
+LOCAL Spinner:={"-","/","|","\\"}; // Used in Export_All and Inport_All
+
+LOCAL Export_All()
+BEGIN
+   LOCAL j, k:=1, cnt:=0, lst, str, cir_str, cirf, SaveCir;
+
+   lst:=AFiles;
+   str:="EXPORT All_Cases()\n";
+   str:=str+"BEGIN\n";
+   FOR j FROM 1 TO SIZE(AFiles) DO
+      cirf:=AFiles(lst[j]);
+      cir_str:=STRING(AFiles(lst[j]),1,0);
+      My_MSGBOX0("Exporting " + Spinner[(j MOD 4)+1]);
+      
+      IFERR cirf(1,1) THEN
+         SaveCir:=0;
+      ELSE
+         IF cirf(1,1)<>Default_Items(1,1) THEN
+            SaveCir:=0;
+         ELSE
+            SaveCir:=1;
+         END;
+      END;
+      
+      IF SaveCir==1 THEN
+          cnt:=cnt+1;
+          IF (SIZE(str)+SIZE(cir_str))>(65535-SIZE("END;\n")) THEN // There seems to be a limit of 64k for strings, so need to save in multiple files
+             IF j<>1 THEN
+                str:=str+"END;\n";
+                Programs("Create_Circs"+R2I(k)):=str;
+                k:=k+1;
+             END;
+             str:="EXPORT All_Cases()\n";
+             str:=str+"BEGIN\n";
+          END;
+          str:=str + "   HVars(" + STRING(lst[j],1,0)+ "):=" + cir_str + ";\n";
+      END;
+   END;
+   str:=str+"END;\n";
+   Programs("Create_Circs"+R2I(k)):=str;
+   str:="";
+   My_MSGBOX("Done. Exported " + R2I(cnt) + " circuits.");
+END;
+
+LOCAL Do_Export_All()
+BEGIN
+   ShiftON:=0;
+   IFERR Export_All() THEN END;
+   BLIT_P(G1, G3);
+   Draw_Items(0);
+END;
+
+LOCAL Export_Circuit()
+BEGIN
+   LOCAL j, lst0, lst:={}, cirf, str, name_str, choosen;
+   
+   lst0:=SORT(AFiles);   
+   FOR j FROM 1 TO SIZE(lst0) STEP 1 DO
+      IF INSTRING(lst0(j), ".png") == 0 THEN
+      	 lst(SIZE(lst)+1):=lst0(j);
+      END;
+   END;
+
+   IFERR choosen:=CHOOSE(j, "Select a circuit to export", lst) THEN RETURN; END;
+     
+   IF choosen THEN
+      IF j>0 THEN
+         cirf:=AFiles(lst(j));
+         name_str:=STRING(lst(j),1,0);
+         IFERR cirf(1,1) THEN
+            My_MSGBOX("Error: '" + lst(j) + "' is not a circuit.");
+            RETURN;
+         ELSE
+            IF cirf(1,1)<>Default_Items(1,1) THEN
+               My_MSGBOX("Error: '" + lst(j) + "' is not a circuit.");
+               RETURN
+            END;
+         END;
+         str:="EXPORT Create_" + lst(j) + "()\n";
+         str:=str+"BEGIN\n";
+         str:=str + "   HVars(" + name_str + "):=" + STRING(cirf,1,0) + ";\n";
+         str:=str + "END;\n";
+         Programs("Pgm_"+lst(j)):=str;
+         My_MSGBOX("Done. Exported '" + lst(j) + "'");
+      END;
+   END;
+END;
+
+LOCAL Do_Export_Circuit()
+BEGIN
+   ShiftON:=0;
+   IFERR Export_Circuit() THEN END;
+   BLIT_P(G1, G3);
+   Draw_Items(0);
+END;
+
+LOCAL Delete_Circuit()
+BEGIN
+   LOCAL j, lst0, lst:={}, cirf, str, choosen;
+   
+   lst0:=SORT(AFiles);   
+   FOR j FROM 1 TO SIZE(lst0) STEP 1 DO
+      IF INSTRING(lst0(j), ".png") == 0 THEN
+      	 lst(SIZE(lst)+1):=lst0(j);
+      END;
+   END;
+
+   IFERR choosen:=CHOOSE(j, "Select a circuit to delete", lst) THEN RETURN; END;
+  
+   IF choosen THEN
+      IF j>0 THEN
+         cirf:=AFiles(lst(j));
+         IFERR cirf(1,1) THEN
+            My_MSGBOX("Error: '" + lst(j) + "' is not a circuit.");
+            RETURN;
+         ELSE
+            IF cirf(1,1)<>Default_Items(1,1) THEN
+               My_MSGBOX("Error: '" + lst(j) + "' is not a circuit.");
+               RETURN
+            ELSE
+               IF My_MSGBOX("Delete '" + lst(j) + "'?") <> 0 THEN
+                  DelAFiles(lst(j));
+                  My_MSGBOX("  " + lst(j) + " deleted.  ");
+               END;
+            END;
+         END;
+      END;
+   END;
+END;
+
+LOCAL Do_Delete_Circuit()
+BEGIN
+   ShiftON:=0;
+   IFERR Delete_Circuit() THEN END;
+   BLIT_P(G1, G3);
+   Draw_Items(0);
+END;
+
+LOCAL Inport_Circuit()
+BEGIN
+   LOCAL j, lst, choosen;
+   lst:=SORT(HVars);
+   
+   IFERR choosen:=CHOOSE(j, "Select a circuit", lst) THEN RETURN; END;
+
+   IF choosen THEN
+      Add_undo();
+      IF j>0 THEN
+         Items:=HVars(lst(j));
+         IFERR Items(1,1) THEN
+            Items:=Default_Items;
+            CircuitName:="";
+            My_MSGBOX("Error: '" + lst(j) + "' is not a circuit.");
+         ELSE
+            IF Items(1,1)<>Default_Items(1,1) THEN
+               Items:=Default_Items;
+               CircuitName:="";
+               My_MSGBOX("Error: '" + lst(j) + "' is not a circuit.");
+            ELSE
+               CircuitName:=lst(j);
+               Rest_Pos();
+            END;
+         END;
+      ELSE
+         Items:=Default_Items;
+         CircuitName:="";
+      END;
+      Draw_Items(0);
+      DEBOUNCE_MOUSE();
+      Add_undo();
+   END;
+END;
+
+LOCAL Do_Inport_Circuit()
+BEGIN
+   ShiftON:=0;
+   IFERR Inport_Circuit() THEN END;
+   BLIT_P(G1, G3);
+   Draw_Items(0);
+END;
+
+LOCAL Inport_All()
+BEGIN
+   LOCAL j, k, lst, Cir_Items:={};
+   lst:=SORT(HVars);
+   k:=0;
+   FOR j FROM 1 TO SIZE(lst) STEP 1 DO
+      My_MSGBOX0("Inporting " + Spinner[(j MOD 4)+1]);
+      Cir_Items:=HVars(lst(j));
+      IFERR Items(1,1) THEN
+         // Not a circuit.  Skip.
+      ELSE
+         IF Items(1,1)<>Default_Items(1,1) THEN
+            // Not a circuit.  Skip.
+         ELSE
+            AFiles(lst(j)):=Cir_Items;
+            k:=k+1;
+         END;
+      END;
+   END;
+   My_MSGBOX("Done. Inported " + R2I(k) + " circuits.");
+END;
+
+LOCAL Do_Inport_All()
+BEGIN
+   ShiftON:=0;
+   IFERR Inport_All() THEN END;
+   BLIT_P(G1, G3);
+   Draw_Items(0);
+END;
+
+LOCAL main_loop()
+BEGIN
+   LOCAL c, j, k, redraw;
+   LOCAL delta_xy, newpart, SomeText, d, menu_tab;
+   LOCAL gx, gy, glx, gly; // Like lx and ly but in the 10 pixels grid
+   LOCAL d_prev, cursor_color;
+   
+   AAngle:=2; // EXTREMELY IMPORTANT: This app works ONLY in degrees
+   Items:=Default_Items;
+   
+   DIMGROB_P(G1,800,600);  // The main drawing canvas (1,920,000 bytes)
+   DIMGROB_P(G2,320,240);  // Used to copy to G0 without flicker (307,200 bytes)
+   DIMGROB_P(G3,800,600);  // For the grid and border as it is slow to draw (1,920,000 bytes)
+   DIMGROB_P(G4,800,600);  // For moving elements without redrawing everything (1,920,000 bytes)
+   DIMGROB_P(G5,80,60);    // Used to determine where to draw "unconnected" bubbles quickly (19,200 bytes)
+   DIMGROB_P(G6,480,1000); // Used to implement a simple terminal to print text (1,920,000 bytes)
+   // Total memory used just on graphics: 8,006,400 bytes!  Trading memory for speed...
+
+   RECT();
+   TEXTOUT_P(" Electric & Electronic Circuit Solver V" + Vern, 0, 50, 4);
+   TEXTOUT_P(" (C) 2017-2018 Jesus Calvino-Fraga", 0, 70, 4);
+   TEXTOUT_P(" EECSolver@gmail.com", 0, 90, 4);
+   TEXTOUT_P(" This program comes with ABSOLUTELY NO", 0, 110, 4);
+   TEXTOUT_P(" WARRANTY. This is free software, and you", 0, 130, 4);
+   TEXTOUT_P(" are welcome to redistribute it under certain ", 0, 150, 4);
+   TEXTOUT_P(" conditions; Press 'ABOUT' for details.", 0, 170, 4);
+       
+   Clear_Term();
+   My_PRINT("This is the terminal.", 0);
+   My_PRINT("Information messages are printed here.", 0);
+   My_PRINT("Press 'Esc' or 'BACK' to go back to the circuit editor.", 0);
+   
+   // Draw edge and grid
+   RECT_P(G3, 0, 0, 800-1, 600-1, RGBgrid, RGBback);
+   FOR j FROM 0 TO 800-1 STEP 10 DO 
+      FOR k FROM 0 TO 600-1 STEP 10 DO 
+         PIXON_P(G3, j, k, RGBgrid);
+      END;
+   END;
+
+   WAIT(2.0);
+   BLIT_P(G1, G3); // Copy grid and border to main drawing canvas
+   Open_Circuit();
+
+   redraw:=1;
+   delta_xy:=10;
+   menu:=0;
+
+   WHILE 1 DO
+      IF redraw==1 THEN
+         redraw:=0;
+         BLIT_P(G2,0,0,320,220,G1,x,y,x+320,y+220);
+         BLIT_P(G0,0,0,320,220,G2,0,0,320,220);
+         gx:=On_Grid(lx+x);
+         gy:=On_Grid(ly+y);
+         glx:=gx-x;
+         gly:=gy-y;
+         CASE
+            IF menu==0 THEN DRAWMENU("FILE","PLACE","EDIT","SOLVE","MANAGE","ABOUT"); END;
+            IF menu==1 THEN DRAWMENU("NEW","LOAD","SAVE","SAVEAS","EXIT","BACK"); END;
+            IF menu==2 THEN DRAWMENU("PART","WIRE","TEXT","JUNCT","","BACK"); END;
+            IF menu==3 THEN DRAWMENU("PROPER","MIRROR","DEL","ROTATE","SELECT","BACK"); END;
+            IF menu==4 THEN DRAWMENU("DC","AC","","TERM","CLROUT","BACK"); END;
+            IF menu==5 THEN DRAWMENU("INPORT","EXPORT","INPALL","EXPALL","DELCIR","BACK"); END;
+            DEFAULT menu:=0; redraw:=1;
+         END;
+         IF newwire==1 THEN
+            ShiftON:=0;
+            LINE_P(wsx-x, wsy-y, glx, gly, RGBsel); // 'Construction wire' in grid
+         ELSE
+            IF newsel==1 THEN // Selection rectangle 
+               LINE_P(ssx-x, ssy-y, lx, ssy-y, RGBsel);
+               LINE_P(lx, ssy-y, lx, ly, RGBsel);
+               LINE_P(lx, ly, ssx-x, ly, RGBsel);
+               LINE_P(ssx-x, ly, ssx-x, ssy-y, RGBsel); 
+            END;
+         END;
+         IF newwire==1 OR newsel==1 THEN cursor_color:=RGBsel; ELSE cursor_color:=RGBcur; END;
+         DRAW_CURSOR(glx, gly, cursor_color); // Keep cursor in grid
+
+         IF ShiftON==0 THEN
+            TEXTOUT_P(CircuitName+" ("+R2I(gx)+","+R2I(gy)+")", G0, 0, 0, 1, brown);
+         ELSE
+            TEXTOUT_P(CircuitName+" ("+R2I(gx)+","+R2I(gy)+") Shift", G0, 0, 0, 1, light_blue);
+         END;
+      END;
+      
+      // http://www.hpmuseum.org/forum/post-82123.html
+      IFERR c:=WAIT(-1); THEN // Wait for mouse or key event
+         // 'On' key pressed.  Do nothing.
+      END;
+      TOff:=5*60*1000;
+      
+      IF TYPE(c)==0 THEN
+         
+         CASE
+         
+         IF c<0 THEN // Timed out.  Get out of shift mode.
+            ShiftON:=0;
+            redraw:=1;
+         END;
+         
+         IF c==41 THEN // Shift key
+            IF ShiftON==1 THEN ShiftON:=0; ELSE ShiftON:=1; END;
+            redraw:=1;
+         END;
+         
+         IF c==4 THEN // Escape stops drawing wire and selection rectangle, also deselects everything
+            newwire:=0;
+            newsel:=0;
+            d:=0;
+            Deselect_all();
+            BLIT_P(G1, G3); Draw_Items(0);
+            redraw:=1;
+         END;
+
+         IF c==30 THEN // Enter key selects
+            d_prev:=d;
+            d:=On_Element(x+lx, y+ly);
+            IF d>=0 OR d_prev>=0 THEN
+               BLIT_P(G1, G3); Draw_Items(1); // Draw unselected
+               BLIT_P(G4, G1); Draw_Items(2); // Draw selected
+               redraw:=1;
+            END;
+         END;
+
+         IF c==34 THEN
+            IF (ShiftON==1) THEN // Shift + 'S' to save
+               ShiftON:=0;
+               Save();
+            ELSE // 'S' for selection box
+               d:=Edit_Select(x+lx, y+ly,d);
+            END;
+            redraw:=1;
+         END;
+
+         IF c==9 THEN // 'Copy'
+            IF (ShiftON==1) THEN // Shift + 'View' for copy command
+               ShiftON:=0;
+               Copy_Selected_Items(x+lx, y+ly);
+               Deselect_all();
+               BLIT_P(G1, G3); Draw_Items(0);
+               redraw:=1;
+            ELSE // 'View' key set to the reference point for a selection move
+               refx:=On_Grid(x+lx);
+               refy:=On_Grid(y+ly);
+            END;
+         END;
+
+         IF c==13 THEN // 'Paste'
+            IF (ShiftON==1) THEN // Shift + 'Menu' for paste command
+               ShiftON:=0;
+               Deselect_all();
+               Paste_Selected_Items(x+lx, y+ly);
+               BLIT_P(G1, G3); Draw_Items(1);
+               BLIT_P(G4, G1); Draw_Items(2); // After pasting get ready for moving
+               d:=1;
+               redraw:=1;
+               refx:=x+lx; refy:=y+ly;
+            END;
+         END;
+         
+         IF c==43 THEN // 'Z'
+            IF (ShiftON==1) THEN // Shift + 'Z' for undo command
+               ShiftON:=0;
+               undo();
+               Deselect_all();
+               BLIT_P(G1, G3); Draw_Items(0);
+               redraw:=1;
+            END;
+         END;
+
+         IF c==42 THEN // 'Y'
+            IF (ShiftON==1) THEN // Shift + 'Y' for redo command
+               ShiftON:=0;
+               redo();
+               Deselect_all();
+               BLIT_P(G1, G3); Draw_Items(0);
+               redraw:=1;
+            END;
+         END;
+         
+         IF c==39 THEN // 'W' places a wire
+            New_W(x+lx, y+ly);
+            BLIT_P(G1, G3); Draw_Items(0);
+            redraw:=1;
+         END;
+
+         IF c==24 THEN // 'J' places a junction
+            New_J(x+lx, y+ly);
+            BLIT_P(G1, G3); Draw_Items(0);
+            redraw:=1;
+         END;
+         
+         IF c==14 THEN // 'Vars' key to change part properties
+            d_prev:=d;
+            d:=On_Element(x+lx, y+ly);
+            IF d>1 THEN
+               Part_Properties(d);
+               BLIT_P(G1, G3); Draw_Items(1); // Draw unselected
+               BLIT_P(G4, G1); Draw_Items(2); // Draw selected
+               redraw:=1;
+            END;
+         END;
+
+         IF c==31 THEN  // 'P' places a part
+            New_Part(x+lx, y+ly);
+            d:=On_Element(x+lx, y+ly);
+            BLIT_P(G1, G3); Draw_Items(1);
+            BLIT_P(G4, G1); Draw_Items(2); // Get ready to move
+            redraw:=1;
+         END;
+         
+         IF c==33 THEN // 'R' rotates part
+            d:=On_Element(x+lx, y+ly);
+            IF d>1 THEN
+               Add_undo();
+               IF Is_Part(d)==1 THEN
+                  Items(d,7):=(Items(d,7)+90 MOD 360.0);
+                  BLIT_P(G1, G3); Draw_Items(1);
+                  BLIT_P(G4, G1); Draw_Items(2); // Get ready to move
+                  redraw:=1;
+               END;
+            END;
+         END;
+         
+         IF c==27 THEN // 'M' mirrors part
+            d:=On_Element(x+lx, y+ly);
+            IF d>1 THEN
+               Add_undo();
+               IF Is_Part(d)==1 THEN
+                  Items(d,9):=((Items(d,9)+1) MOD 2);
+                  BLIT_P(G1, G3); Draw_Items(1);
+                  BLIT_P(G4, G1); Draw_Items(2); // Get ready to move
+                  redraw:=1;
+               END;
+            END;
+         END;
+
+         IF c==19 THEN // 'Del' key erases selected Items
+            Delete_Items();
+            BLIT_P(G1, G3);
+            Draw_Items(0);
+            redraw:=1;
+         END;
+         
+         IF c==23 THEN
+            IF (ShiftON==1) THEN // Shift + 'I' to inport circuit
+               ShiftON:=0;
+         	   Inport_Circuit();
+         	   BLIT_P(G1, G3);
+         	   Draw_Items(0);
+         	END;
+         END;
+
+         IF c==26 THEN
+            IF (ShiftON==1) THEN // Shift + 'L' to inport all circuits
+         	   Do_Inport_All();
+         	END;
+         END;
+
+         IF c==18 THEN
+            IF (ShiftON==1) THEN // Shift + 'E' to export circuit
+         	   Do_Export_Circuit();
+         	END;
+         END;
+
+         IF c==17 THEN
+            IF (ShiftON==1) THEN // Shift + 'D' to delete a circuit
+         	   Do_Delete_Circuit();
+         	END;
+         END;
+         
+         IF c==16 THEN
+            IF (ShiftON==1) THEN // Shift + 'C' to save image of the workspace
+               ShiftON:=0;
+         	   Capture_Screen();
+         	   BLIT_P(G1, G3);
+         	   Draw_Items(0);
+         	END;
+         END;       
+
+         if c==2 OR c==12 OR c==8 OR c==7 THEN // For the arrow keys do this.  No scrolling though...
+            IF c==2  THEN ly:=MAX(ly-delta_xy, 0);   END; // UP
+            IF c==12 THEN // DOWN
+               if (ly+delta_xy+y)>=600 then
+                  ly:=600-y;
+               else
+                  ly:=ly+delta_xy;
+               end;
+            END;
+            IF c==8 THEN // RIGHT
+               if (lx+x)>=800 then
+                  lx:=800-x;
+               else
+                  lx:=lx+delta_xy;
+               end;
+            END;
+            IF c==7  THEN lx:=MAX(lx-delta_xy, 0);   END; // LEFT
+            redraw:=1;
+            IF (ShiftON==1) AND d>0 THEN // Shift key to move parts and such
+               IF Move_Items(x+lx, y+ly)==1 THEN
+                  BLIT_P(G1, G4); Draw_Items(2);
+               END;
+            END;
+            Save_Pos();
+         END;
+         
+         END; //CASE END
+      END;
+         
+      IF TYPE(c)==6 THEN // Mouse input
+         redraw:=1;
+         
+         IF c(1)==0 THEN // Mouse down
+            lx:=MAX(0,MIN(320,c(2)));
+            ly:=MAX(0,MIN(220,c(3)));
+            Save_Pos();
+         END;
+         
+         IF c(1)==7 THEN // Long click
+            lx:=MAX(0,MIN(320,c(2)));
+            ly:=MAX(0,MIN(220,c(3)));
+            Save_Pos();
+            d_prev:=d;
+            d:=On_Element(x+lx, y+ly);
+            IF d>=0 OR d_prev>=0 THEN
+               BLIT_P(G1, G3); Draw_Items(1); // Draw unselected
+               BLIT_P(G4, G1); Draw_Items(2); // Draw selected
+            END;
+         END;
+
+         IF c(1)==1 THEN // Drag
+            IF (ShiftON==1) THEN // Shift key to move parts and such
+	           lx:=MAX(0,MIN(320,c(2)));
+	           ly:=MAX(0,MIN(220,c(3)));
+               IF Move_Items(x+lx, y+ly)==1 THEN // A bit slugghish but usable for now
+                  BLIT_P(G1, G4); Draw_Items(2);
+                  redraw:=1;
+               END;
+            ELSE
+               x:=MAX(0,MIN(800-320,x-c(2)+lx));
+               y:=MAX(0,MIN(600-220,y-c(3)+ly));
+	           lx:=MAX(0,MIN(320,c(2)));
+	           ly:=MAX(0,MIN(220,c(3)));
+            END;
+            Save_Pos();
+         END;
+
+         IF c(1)==3 THEN // Mouse click
+            menu_tab:=softmenu(c(2),c(3),6);
+            CASE
+            
+               if menu==0 THEN
+                  CASE
+                     IF menu_tab==1 THEN
+                         menu:=1;
+                     END;
+                     IF menu_tab==2 THEN
+                         menu:=2;
+                     END;
+                     IF menu_tab==3 THEN
+                         menu:=3;
+                     END;
+                     IF menu_tab==4 THEN
+                         menu:=4;
+                     END;
+                     IF menu_tab==5 THEN
+                         menu:=5;
+                     END;
+                     IF menu_tab==6 THEN
+                         About();
+                     END;
+                  END;
+               END;
+
+               if menu==1 THEN
+                  CASE
+                     IF menu_tab==1 THEN // CIRCUIT/NEW
+                        New_Circuit();
+                     END;
+                     IF menu_tab==2 THEN // CIRCUIT/LOAD
+                        Open_Circuit(); 
+                        BLIT_P(G1, G3); Draw_Items(0);
+                     END;
+                     IF menu_tab==3 THEN // CIRCUIT/SAVE
+                        Save();
+                     END;
+                     IF menu_tab==4 THEN // CIRCUIT/SAVE AS
+                        Save_As();
+                     END;
+                     IF menu_tab==5 THEN // CIRCUIT/EXIT
+                        IF My_MSGBOX("Do you want to exit the program?") <> 0 THEN
+                           // Wipe out all the lists, matrices, and vectors
+                           undolst:={}; Items:={}; WireLst:={};
+                           Res:={}; Ind:={}; Cap:={}; Imp:={}; Idc:={}; Vdc:={}; Iac:={}; Vac:={};
+                           Diodes:={}; NPN:={}; ANPN:={}; PNP:={}; APNP:={}; NMOS:={}; PMOS:={};
+                           OpAmps:={}; VCCS:={}; VCVS:={}; CCCS:={}; CCVS:={}; IDTR:={};
+                           MatrixY:={}; VectorV:={}; VectorI:={};
+                           MatrixY_NL:={}; VectorI_NL:={}; VectorV_NL:={};
+                           // Clear the circuit name
+                           CircuitName:="";
+                           // Clear the copy buffer
+                           Copied:={};
+                           // Free all the graphic memory (very important!).
+                           DIMGROB_P(G1,0,0);
+                           DIMGROB_P(G2,0,0);
+                           DIMGROB_P(G3,0,0);
+                           DIMGROB_P(G4,0,0);
+                           DIMGROB_P(G5,0,0);
+                           DIMGROB_P(G6,0,0);
+                           RETURN;
+                        END;
+                        BLIT_P(G1, G3); Draw_Items(0);
+                     END;
+                     IF menu_tab==6 THEN
+                        menu:=0;
+                     END;
+                  END;
+               END;
+
+               if menu==2 THEN
+                  CASE
+                     IF menu_tab==1 THEN // PLACE/PART
+                        New_Part(x+lx, y+ly); // Menu with all the parts available                    
+                        d:=On_Element(x+lx, y+ly);
+                        BLIT_P(G1, G3); Draw_Items(1);
+                        BLIT_P(G4, G1); Draw_Items(2); // Get ready to move
+                     END;
+                     IF menu_tab==2 THEN // PLACE/WIRE
+                        New_W(x+lx, y+ly);
+                        BLIT_P(G1, G3); Draw_Items(0);
+                     END;
+                     IF menu_tab==3 THEN // PLACE/TEXT
+                        LOCAL inputed;
+                        SomeText:="Default Text";
+                        IFERR inputed:=INPUT({{SomeText,[2]}}, "Text", {"Text"}, "Text", {SomeText}, {SomeText}) THEN
+                           // In case of ON key do nothing
+                        ELSE
+                           IF INPUT({{SomeText,[2]}}, "Text", {"Text"}, "Text", {SomeText}, {SomeText}) == 1 THEN
+                              Add_undo();
+                              New_T(x+lx, y+ly, SomeText);
+                              BLIT_P(G1, G3); Draw_Items(0);
+                           END;
+                        END;
+                     END;
+                     IF menu_tab==4 THEN  // PLACE/JUNCTION
+                        New_J(x+lx, y+ly);
+                        BLIT_P(G1, G3); Draw_Items(0);
+                     END;
+                     IF menu_tab==5 THEN
+                     END;
+                     IF menu_tab==6 THEN // PLACE/BACK
+                        menu:=0;
+                     END;
+                  END;
+                  IF menu_tab < 5 THEN d:=On_Element(x+lx, y+ly); END;
+               END;
+
+               if menu==3 THEN
+                  CASE
+                     IF menu_tab==1 THEN // EDIT/PROP
+                        //d:=On_Element(x+lx, y+ly);
+                        IF d>1 THEN
+                           Part_Properties(d);
+                           BLIT_P(G1, G3); Draw_Items(1);
+                           BLIT_P(G4, G1); Draw_Items(2); // Get ready to move
+                        END;
+                     END;
+                     IF menu_tab==2 THEN // EDIT/MIRROR
+                        d:=On_Element(x+lx, y+ly);
+                        IF d>1 THEN
+                           Add_undo();
+                           IF Is_Part(d)==1 THEN
+                              Items(d,9):=((Items(d,9)+1) MOD 2);
+                              BLIT_P(G1, G3); Draw_Items(1);
+                              BLIT_P(G4, G1); Draw_Items(2); // Get ready to move
+                           END;
+                        END;
+                     END;
+                     IF menu_tab==3 THEN // EDIT/DEL
+                        Delete_Items();
+                        BLIT_P(G1, G3); Draw_Items(0);
+                     END;
+                     IF menu_tab==4 THEN // EDIT/ROTATE (only parts can be rotated)
+                        d:=On_Element(x+lx, y+ly);
+                        IF d>1 THEN
+                           Add_undo();
+                           IF Is_Part(d)==1 THEN
+                              Items(d,7):=(Items(d,7)+90 MOD 360.0);
+                              BLIT_P(G1, G3); Draw_Items(1);
+                              BLIT_P(G4, G1); Draw_Items(2); // Get ready to move
+                           END;
+                        END;
+                     END;
+                     IF menu_tab==5 THEN // EDIT/SELECT
+                        d:=Edit_Select(x+lx, y+ly, d);
+                     END;
+                     IF menu_tab==6 THEN // EDIT/BACK
+                        menu:=0;
+                     END;
+                  END;
+               END;
+             
+               if menu==4 THEN
+                  CASE
+                     IF menu_tab==1 THEN // SOLVE/DC
+                        Clear_Results(); // Mostly to fix the current's arrow direction
+                        IFERR DC_Solve(1) THEN
+                           My_PRINT("ERROR: DC_Solve() failed", 1);
+                           My_Term();
+                        END;
+                        BLIT_P(G1, G3); Draw_Items(0);
+                     END;
+                     IF menu_tab==2 THEN // SOLVE/AC
+                        Clear_Results(); // Mostly to fix the current's arrow direction
+                        IFERR AC_Solve() THEN
+                           My_PRINT("ERROR: AC_Solve() failed", 1);
+                           My_Term();
+                        END;
+                        BLIT_P(G1, G3); Draw_Items(0);
+                     END;
+                     IF menu_tab==3 THEN
+                     END;
+                     IF menu_tab==4 THEN // SOLVE/TERM
+                        My_Term();
+                     END;
+                     IF menu_tab==5 THEN
+                        Clear_Results();
+                        BLIT_P(G1, G3); Draw_Items(0);
+                     END;
+                     IF menu_tab==6 THEN // SOLVE/BACK
+                        menu:=0;
+                     END;
+                  END;
+               END;
+             
+               if menu==5 THEN
+                  CASE
+                     IF menu_tab==1 THEN
+		                Do_Inport_Circuit();
+                     END;
+                     IF menu_tab==2 THEN
+         	            Do_Export_Circuit();
+                     END;
+                     IF menu_tab==3 THEN
+         	            Do_Inport_All();
+                     END;
+                     IF menu_tab==4 THEN
+                        Do_Export_All();
+                     END;
+                     IF menu_tab==5 THEN
+         	            Do_Delete_Circuit();
+                     END;
+                     IF menu_tab==6 THEN // SOLVE/BACK
+                        menu:=0;
+                     END;
+                  END;
+               END;
+            END; // CASE
+         END; // IF c(1)==3
+      END; // IF TYPE(c)==6
+   END; // While 1
+END;
+
+EXPORT START()
+BEGIN
+   IF Theme(1)==1 THEN // Colors for light theme
+      RGBpart:=blue; RGBwire:=black; RGBjunc:=black; RGBpin:=dark_green;
+      RGBback:=white; RGBgrid:=red; RGBtext:=black; RGBsel:=red;
+      RGBcur:=black; RGBbub:=dark_green;
+   ELSE // Colors for dark theme
+      RGBpart:=light_blue; RGBwire:=white; RGBjunc:=white; RGBpin:=yellow;
+      RGBback:=black; RGBgrid:=gray; RGBtext:=white; RGBsel:=red;
+      RGBcur:=white; RGBbub:=green;
+   END;
+   Restart_undo();
+   main_loop();
+END;
